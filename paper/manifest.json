@@ -1,0 +1,65 @@
+{
+  "python": "3.13.14",
+  "git_commit": "02704943d3820fa19d8f3d38023a7054d788c38c",
+  "packages": {
+    "pandas": "3.0.6",
+    "numpy": "2.5.3",
+    "scikit-learn": "1.9.1",
+    "xgboost": "3.4.1",
+    "shap": "0.52.0",
+    "scipy": "1.18.1",
+    "anthropic": "1.11.0"
+  },
+  "selected_feature_config": {
+    "config": "consensus_20",
+    "strategy": "consensus",
+    "k": 20
+  },
+  "n_rows": 1567,
+  "n_dev": 1253,
+  "folds": [
+    {
+      "fold": 1,
+      "train": [
+        0,
+        471
+      ],
+      "val": [
+        471,
+        785
+      ]
+    },
+    {
+      "fold": 2,
+      "train": [
+        0,
+        785
+      ],
+      "val": [
+        785,
+        1097
+      ]
+    },
+    {
+      "fold": 3,
+      "train": [
+        0,
+        1097
+      ],
+      "val": [
+        1097,
+        1253
+      ]
+    }
+  ],
+  "final": {
+    "train": [
+      0,
+      1253
+    ],
+    "test": [
+      1253,
+      1567
+    ]
+  }
+}

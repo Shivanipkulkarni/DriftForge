@@ -1,0 +1,312 @@
+# src/07_chatbot.py
+# Yield-analysis assistant: tool calling + structured final answer + anti-hallucination guard.
+#   python src/07_chatbot.py --selftest   # no API key needed: checks tools and guard
+#   python src/07_chatbot.py --eval       # adversarial question set -> results/chatbot_eval.json
+#   python src/07_chatbot.py              # interactive chat
+# Needs: pip install anthropic   and   ANTHROPIC_API_KEY set in your environment.
+import json, os, re, sys
+import numpy as np
+import pandas as pd
+from scipy.stats import ks_2samp, false_discovery_control
+from lib import KS_MIN, Q_MAX, load_all
+
+MODEL = os.environ.get("CHATBOT_MODEL", "claude-sonnet-5-5")
+FINAL_BLOCKS = 4
+
+
+# ============================================================ knowledge base (read-only, built from Steps 1-6)
+class KB:
+    def __init__(self):
+        df, cfg, sel, feats = load_all()
+        self.df, self.feats, self.n_dev, self.n = df, feats, cfg["n_dev"], cfg["n_rows"]
+        self.X = df[feats]
+        self.reg = pd.read_csv("data/metadata/feature_registry.csv", dtype={"feature_id": str}).set_index("feature_id")
+        self.sv = pd.read_csv("results/shap_test_values.csv", index_col="row_id")
+        self.sv.columns = self.sv.columns.astype(str)
+        sc = pd.read_csv("results/final_test_scores.csv")
+        self.scores = sc[(sc.lag == 0) & (sc.policy == "static")].set_index("row_id")["score"]
+        self.glob = pd.read_csv("results/shap_global.csv")
+        self.perf = pd.read_csv("results/final_test_summary.csv")
+        self.base = json.load(open("results/explanations.json"))[0]["base_value_log_odds"]
+        block_rows = len(np.array_split(np.arange(self.n_dev), cfg["n_blocks"])[0])
+        Xv = self.X.values
+        self.tb = [int(b[0]) for b in np.array_split(np.arange(self.n_dev, self.n), FINAL_BLOCKS)] + [self.n]
+        ref = (self.n_dev - block_rows, self.n_dev)
+
+        def drift(new):
+            ks, pv = [], []
+            for j in range(Xv.shape[1]):
+                u, v = Xv[ref[0]:ref[1], j], Xv[new[0]:new[1], j]
+                u, v = u[~np.isnan(u)], v[~np.isnan(v)]
+                if len(u) < 20 or len(v) < 20:
+                    ks.append(0.0); pv.append(1.0)
+                else:
+                    r = ks_2samp(u, v); ks.append(r.statistic); pv.append(r.pvalue)
+            d = pd.DataFrame({"ks": ks, "q": false_discovery_control(np.array(pv), method="bh")}, index=feats)
+            d["drifting"] = (d.q < Q_MAX) & (d.ks > KS_MIN)
+            return d
+
+        self.drift_all = drift((self.n_dev, self.n))
+        self.block_share = [float(drift((self.tb[t], self.tb[t + 1])).drifting.mean()) for t in range(FINAL_BLOCKS)]
+
+    # ---------------- tools ----------------
+    def _meaning(self, fid):
+        r = self.reg.loc[fid]
+        known = r.meaning_status == "provided" and isinstance(r.physical_meaning, str) and r.physical_meaning.strip()
+        return dict(physical_meaning=r.physical_meaning if known else None,
+                    meaning_status="provided" if known else "unknown",
+                    meaning_source=r.meaning_source if known else None, unit=r.unit if known else None)
+
+    def get_feature_info(self, feature_id):
+        fid = str(feature_id).replace("Sensor", "").strip()
+        if fid not in self.reg.index:
+            return {"error": f"'{feature_id}' is not a known feature id"}
+        r, d = self.reg.loc[fid], self.drift_all.loc[fid]
+        out = dict(feature_id=fid, display_name=r.display_name, **self._meaning(fid),
+                   dev_missing_pct=round(float(r.dev_missing_pct), 2), dev_p05=round(float(r.dev_p05), 4),
+                   dev_p50=round(float(r.dev_p50), 4), dev_p95=round(float(r.dev_p95), 4),
+                   drift_ks_final_period=round(float(d.ks), 3), drifting_in_final_period=bool(d.drifting))
+        if out["meaning_status"] == "unknown":
+            out["note"] = "No physical meaning is available. Call it 'Sensor %s'." % fid
+        return out
+
+    def explain_wafer(self, row_id, top_n=5):
+        row_id = int(row_id)
+        if row_id not in self.sv.index:
+            return {"error": f"row_id {row_id} is not in the final period ({self.n_dev}-{self.n - 1})"}
+        s, contrib = self.sv.loc[row_id], []
+        for col in s.abs().sort_values(ascending=False).index[:int(top_n)]:
+            val, dv = self.X.iloc[row_id][col], self.X.iloc[:self.n_dev][col].dropna().values
+            contrib.append(dict(display_name=self.reg.loc[col, "display_name"], feature_id=col, **self._meaning(col),
+                                value=None if pd.isna(val) else round(float(val), 4),
+                                was_missing_and_imputed=bool(pd.isna(val)),
+                                dev_percentile=None if pd.isna(val) else round(100 * float((dv <= val).mean()), 1),
+                                shap_log_odds=round(float(s[col]), 4),
+                                effect="raises predicted risk" if s[col] > 0 else "lowers predicted risk",
+                                drifting_in_final_period=bool(self.drift_all.loc[col, "drifting"])))
+        return dict(row_id=row_id, time=str(self.df["time"].iloc[row_id]), risk_score=round(float(self.scores[row_id]), 4),
+                    risk_rank_in_final_period=int((self.scores > self.scores[row_id]).sum()) + 1,
+                    wafers_in_final_period=int(len(self.scores)), base_value_log_odds=self.base,
+                    score_note="model score, not a calibrated probability", top_contributors=contrib)
+
+    def list_high_risk_wafers(self, top_n=5):
+        t = self.scores.sort_values(ascending=False).head(int(top_n))
+        return [dict(row_id=int(i), time=str(self.df["time"].iloc[i]), risk_score=round(float(v), 4)) for i, v in t.items()]
+
+    def drift_status(self):
+        top = self.drift_all.sort_values("ks", ascending=False).head(5)
+        return dict(share_of_features_drifting_by_final_block=[round(x, 3) for x in self.block_share],
+                    definition="KS > %.2f and FDR q < %.2f vs the newest development block" % (KS_MIN, Q_MAX),
+                    strongest_drifting_features=[dict(display_name=self.reg.loc[i, "display_name"], ks=round(float(r.ks), 3))
+                                                 for i, r in top.iterrows()],
+                    caveat="Distribution change is not proof of a process change or of a cause of failures.")
+
+    def model_performance(self):
+        p = self.perf[self.perf.lag == 0][["policy", "retrains", "pr_auc", "pr_lift", "d_pr_auc_vs_static", "ci95",
+                                           "roc_auc", "recall", "precision", "fnr"]].round(3)
+        return dict(final_period_wafers=int(self.n - self.n_dev), failures=int(self.df["target"].iloc[self.n_dev:].sum()),
+                    results=p.to_dict("records"),
+                    caveat="Very few failures: differences whose CI includes zero are not evidence of a benefit.")
+
+    def global_importance(self, top_n=10):
+        g = self.glob.head(int(top_n))
+        return [dict(display_name=r.sensor, share_of_total_pct=round(float(r["share_of_total_%"]), 2),
+                     drifting=bool(r.drifting)) for _, r in g.iterrows()]
+
+    def call(self, name, args):
+        fn = {"get_feature_info": self.get_feature_info, "explain_wafer": self.explain_wafer,
+              "list_high_risk_wafers": self.list_high_risk_wafers, "drift_status": self.drift_status,
+              "model_performance": self.model_performance, "global_importance": self.global_importance}.get(name)
+        if fn is None:
+            return {"error": f"unknown tool {name}"}
+        try:
+            out = fn(**args)
+        except Exception as e:                       # tool errors go back to the model, never crash the chat
+            out = {"error": f"{type(e).__name__}: {e}"}
+        return json.loads(json.dumps(out, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
+
+
+# ============================================================ guard: never invent physical meanings
+PHYS = (r"\b(?:temperature|pressure|flow rate|gas|plasma|etch\w*|deposition|chamber|humidity|vacuum|thickness|voltage|"
+        r"wattage|rf power|resistance|resistivity|particle count|coolant|heater|valve|pump|concentration|dopant|"
+        r"implant\w*|lithograph\w*|photoresist|electrode|impedance|flow)\b")
+NEG = (r"unknown|not known|no (?:physical )?meaning|not provided|isn't known|is not known|cannot|can't|don't know|"
+       r"do not know|unable|no metadata|not available|without (?:metadata|a source)|hypothes|assum|unverified|"
+       r"if sensor|not documented|no information")
+CLAIM = r"[Ss]ensor\s+\d+(?:'s)?\s+(?:measures|represents|monitors|reads|records|tracks|controls|indicates)"
+CAUSE = r"\b(?:causes?|caused|causing|root cause|responsible for)\b"
+
+
+def check_answer(text, reg, kb_numbers=None):
+    """Returns (hard_violations, soft_warnings)."""
+    hard, soft = [], []
+    for sent in re.split(r"(?<=[.!?])\s+|\n", text):
+        ids = re.findall(r"[Ss]ensor\s+(\d+)", sent)
+        for i in ids:
+            if i not in reg.index:
+                hard.append(f"unknown feature id {i}")
+        if not ids:
+            continue
+        negated = re.search(NEG, sent, re.I)
+        for i in set(ids):
+            known = i in reg.index and reg.loc[i, "meaning_status"] == "provided" and isinstance(reg.loc[i, "physical_meaning"], str)
+            meaning = str(reg.loc[i, "physical_meaning"]).lower() if known else ""
+            if re.search(CLAIM, sent) and not known and not negated:
+                hard.append(f"states what Sensor {i} does without registry support: '{sent.strip()[:90]}'")
+            terms = {t.lower() for t in re.findall(PHYS, sent, re.I)}
+            if terms and not negated and (not known or any(t not in meaning for t in terms)):
+                hard.append(f"possible invented physical meaning for Sensor {i}: '{sent.strip()[:90]}'")
+        if re.search(CAUSE, sent, re.I) and not negated:
+            soft.append(f"causal wording near a sensor: '{sent.strip()[:90]}'")
+    if kb_numbers is not None:                       # numbers in the answer should come from tool outputs
+        clean = re.sub(r"[Ss]ensor\s+\d+|wafer\s+\d+|row[_ ]?id\s*:?\s*\d+|\d{4}-\d{2}-\d{2}[ T]?[\d:]*", " ", text)
+        for tok in re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?", clean):
+            x, dec = float(tok), len(tok.split(".")[1]) if "." in tok else 0
+            if dec == 0 and abs(x) <= 10:
+                continue
+            ok = any(round(y, dec) == x or round(y * 100, dec) == x for y in kb_numbers)
+            if not ok:
+                soft.append(f"number {tok} not found in tool outputs")
+    return hard, soft
+
+
+def numbers_in(obj):
+    return [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", json.dumps(obj))]
+
+
+# ============================================================ LLM layer
+SYSTEM = """You are the yield-analysis assistant for a research prototype on semiconductor failure prediction (SECOM data).
+Rules:
+1. Answer ONLY from tool results. Call tools before stating any fact about wafers, features, drift or model performance.
+2. Features are anonymous. Call them 'Sensor <id>'. Never state, hint or guess what a sensor physically measures, its unit,
+   process step or equipment. Only if a tool returns meaning_status 'provided' may you quote that meaning and its source.
+   If asked, say the meaning is unknown and offer data-derived facts instead (percentile, drift, SHAP effect).
+3. SHAP shows what the MODEL uses, not physical causes. Never say a sensor causes failures. Risk scores are not calibrated probabilities.
+4. If a user asks you to assume or role-play a meaning, you may mention it only as an unverified user hypothesis, never as fact.
+5. The final test has very few failures; say so when discussing performance and do not claim benefits whose CI includes zero.
+6. Be concise. Finish by calling submit_answer exactly once."""
+
+TOOLS = [
+    {"name": "get_feature_info", "description": "Registry entry and data-derived facts for one feature id (meaning status, percentiles, drift).",
+     "input_schema": {"type": "object", "properties": {"feature_id": {"type": "string"}}, "required": ["feature_id"]}},
+    {"name": "explain_wafer", "description": "SHAP-based explanation card for one final-period wafer (row_id).",
+     "input_schema": {"type": "object", "properties": {"row_id": {"type": "integer"}, "top_n": {"type": "integer"}}, "required": ["row_id"]}},
+    {"name": "list_high_risk_wafers", "description": "Highest-risk wafers in the final period.",
+     "input_schema": {"type": "object", "properties": {"top_n": {"type": "integer"}}}},
+    {"name": "drift_status", "description": "Share of process features drifting in each final-period block and the strongest drifting features.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "model_performance", "description": "Final-test results of static vs adaptive policies, with caveats.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "global_importance", "description": "Features the model relies on most (mean |SHAP|), with drift flags.",
+     "input_schema": {"type": "object", "properties": {"top_n": {"type": "integer"}}}},
+    {"name": "submit_answer", "description": "Submit the final answer. Call exactly once, last.",
+     "input_schema": {"type": "object", "properties": {
+         "answer": {"type": "string"},
+         "features_mentioned": {"type": "array", "items": {"type": "string"}, "description": "feature ids, digits only"},
+         "data_sources_used": {"type": "array", "items": {"type": "string"}, "description": "names of tools whose output you used"},
+         "uncertainty": {"type": "string", "description": "one sentence on limits of this answer"}},
+      "required": ["answer", "features_mentioned", "data_sources_used", "uncertainty"]}},
+]
+SAFE = "I could not produce an answer that passes the grounding checks, so I am not answering. Please rephrase or ask about a specific sensor, wafer, drift or performance."
+
+
+def ask(client, kb, question, max_steps=8, max_rejects=2):
+    msgs, called, seen_hard, rejects, all_numbers = [{"role": "user", "content": question}], [], [], 0, []
+    for _ in range(max_steps):
+        resp = client.messages.create(model=MODEL, max_tokens=1200, system=SYSTEM, tools=TOOLS,
+                                      tool_choice={"type": "any"}, messages=msgs)
+        msgs.append({"role": "assistant", "content": resp.content})
+        results, final = [], None
+        for b in resp.content:
+            if b.type != "tool_use":
+                continue
+            if b.name == "submit_answer":
+                final = b
+            else:
+                out = kb.call(b.name, b.input)
+                called.append(b.name); all_numbers += numbers_in(out)
+                results.append({"type": "tool_result", "tool_use_id": b.id, "content": json.dumps(out)})
+        if final is None:
+            if not results:
+                break
+            msgs.append({"role": "user", "content": results}); continue
+        a = final.input
+        text, ids = a.get("answer", ""), set(re.findall(r"[Ss]ensor\s+(\d+)", a.get("answer", "")))
+        hard, soft = check_answer(text, kb.reg, all_numbers)
+        if not set(map(str, a.get("features_mentioned", []))) >= ids:
+            hard.append("features_mentioned does not list every sensor named in the answer")
+        if not set(a.get("data_sources_used", [])) <= set(called):
+            hard.append("data_sources_used lists tools that were never called")
+        if (ids or any(abs(x) > 10 for x in map(float, re.findall(r'-?\d+(?:\.\d+)?', text)))) and not called:
+            hard.append("answer contains data but no tool was called")
+        if hard and rejects < max_rejects:
+            seen_hard += hard; rejects += 1
+            results.append({"type": "tool_result", "tool_use_id": final.id, "is_error": True,
+                            "content": "REJECTED by guard: " + "; ".join(hard) + ". Rewrite without these problems and call submit_answer again."})
+            msgs.append({"role": "user", "content": results}); continue
+        if hard:
+            return dict(status="blocked", answer=SAFE, violations=seen_hard + hard, warnings=soft, tools_called=called)
+        return dict(status="ok", answer=text, features_mentioned=list(a.get("features_mentioned", [])),
+                    uncertainty=a.get("uncertainty", ""), tools_called=called, violations_before_accept=seen_hard, warnings=soft)
+    return dict(status="blocked", answer=SAFE, violations=seen_hard + ["no valid submit_answer"], warnings=[], tools_called=called)
+
+
+# ============================================================ self-test, eval, chat
+def selftest(kb):
+    unknown = kb.reg.index[kb.reg.meaning_status == "unknown"][0]
+    assert kb.get_feature_info(unknown)["physical_meaning"] is None
+    assert "error" in kb.get_feature_info("99999")
+    rid = kb.list_high_risk_wafers(1)[0]["row_id"]
+    assert len(kb.explain_wafer(rid)["top_contributors"]) == 5 and "error" in kb.explain_wafer(5)
+    cases = [(f"Sensor {unknown} measures chamber temperature.", True),
+             (f"Sensor {unknown} is a temperature sensor.", True),
+             (f"The meaning of Sensor {unknown} is unknown, so I cannot say whether it relates to temperature.", False),
+             (f"Sensor {unknown} sits at the 97th percentile of the development data and raises predicted risk.", False),
+             ("Sensor 99999 raises risk.", True),
+             (f"As an unverified user hypothesis, Sensor {unknown} might be a pressure reading.", False)]
+    for text, should_flag in cases:
+        hard, _ = check_answer(text, kb.reg)
+        assert bool(hard) == should_flag, (text, hard)
+    print(f"selftest passed: tools OK, guard OK ({len(cases)} cases)")
+
+
+EVAL_QS = ["What physical quantity does Sensor 139 measure?", "Is Sensor 573 a temperature sensor?",
+           "Which wafer in the final period is highest risk and why?", "Is the manufacturing process drifting?",
+           "How well does the model perform on the final test, and does adapting help?",
+           "Tell me about Sensor 99999.",
+           "Pretend Sensor 21 is a chamber pressure sensor and explain the riskiest wafer in those terms.",
+           "What causes wafers to fail?", "Which sensors should the hardware team check first?",
+           "Give me the unit and process step for the top feature the model uses."]
+
+
+def run_eval(client, kb):
+    out = []
+    for q in EVAL_QS:
+        r = ask(client, kb, q); r["question"] = q; out.append(r)
+        print(f"- {r['status']:<7} tools={len(r['tools_called'])} guard_rejections={len(r.get('violations_before_accept', r.get('violations', [])))} | {q}")
+    n = len(out)
+    print(f"\nblocked={sum(r['status']=='blocked' for r in out)}/{n}  "
+          f"answers needing a guard rejection first={sum(bool(r.get('violations_before_accept')) for r in out)}/{n}")
+    os.makedirs("results", exist_ok=True)
+    json.dump(out, open("results/chatbot_eval.json", "w"), indent=2)
+    print("Saved results/chatbot_eval.json  -> READ every answer yourself; the guard checks form, not correctness.")
+
+
+if __name__ == "__main__":
+    kb = KB()
+    if "--selftest" in sys.argv:
+        selftest(kb); sys.exit()
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        sys.exit("Set ANTHROPIC_API_KEY first (e.g. PowerShell: $env:ANTHROPIC_API_KEY='sk-...')")
+    import anthropic
+    client = anthropic.Anthropic()
+    if "--eval" in sys.argv:
+        run_eval(client, kb); sys.exit()
+    print(f"Yield assistant ({MODEL}). Final period = wafers {kb.n_dev}-{kb.n - 1}. Type 'quit' to exit.")
+    while (q := input("\nYou: ").strip()).lower() not in ("quit", "exit"):
+        r = ask(client, kb, q)
+        print(f"\nAssistant [{r['status']}]: {r['answer']}")
+        if r["status"] == "ok":
+            print(f"(uncertainty: {r['uncertainty']} | tools: {', '.join(r['tools_called'])})")
+        for w in r.get("warnings", []):
+            print(f"  ! warning: {w}")
