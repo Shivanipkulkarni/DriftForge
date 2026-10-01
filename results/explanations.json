@@ -1,0 +1,278 @@
+[
+  {
+    "row_id": 1326,
+    "time": "2008-10-05 16:15:00",
+    "risk_score": 0.5943,
+    "score_note": "model score, not a calibrated probability",
+    "base_value_log_odds": 0.7456,
+    "top_contributors": [
+      {
+        "feature_id": "59",
+        "display_name": "Sensor 59",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 5.7309,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 76.7,
+        "shap_log_odds": 0.4493,
+        "effect": "raises predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "64",
+        "display_name": "Sensor 64",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 14.2691,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 7.8,
+        "shap_log_odds": -0.416,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "33",
+        "display_name": "Sensor 33",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 9.534,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 92.1,
+        "shap_log_odds": 0.3971,
+        "effect": "raises predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "573",
+        "display_name": "Sensor 573",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 0.1233,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 0.4,
+        "shap_log_odds": 0.2915,
+        "effect": "raises predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "307",
+        "display_name": "Sensor 307",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 0.1193,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 34.5,
+        "shap_log_odds": -0.2767,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": false
+      }
+    ]
+  },
+  {
+    "row_id": 1364,
+    "time": "2008-10-06 13:55:00",
+    "risk_score": 0.3204,
+    "score_note": "model score, not a calibrated probability",
+    "base_value_log_odds": 0.7456,
+    "top_contributors": [
+      {
+        "feature_id": "59",
+        "display_name": "Sensor 59",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": -0.0345,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 36.5,
+        "shap_log_odds": -1.1515,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "307",
+        "display_name": "Sensor 307",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 0.1199,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 35.1,
+        "shap_log_odds": -0.7726,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "573",
+        "display_name": "Sensor 573",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 0.1416,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 2.2,
+        "shap_log_odds": 0.6489,
+        "effect": "raises predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "41",
+        "display_name": "Sensor 41",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 2.932,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 34.5,
+        "shap_log_odds": -0.4507,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "33",
+        "display_name": "Sensor 33",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 9.3181,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 88.7,
+        "shap_log_odds": 0.3313,
+        "effect": "raises predicted risk",
+        "drifting_in_final_period": false
+      }
+    ]
+  },
+  {
+    "row_id": 1472,
+    "time": "2008-10-12 18:47:00",
+    "risk_score": 0.714,
+    "score_note": "model score, not a calibrated probability",
+    "base_value_log_odds": 0.7456,
+    "top_contributors": [
+      {
+        "feature_id": "130",
+        "display_name": "Sensor 130",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 0.6589,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 14.1,
+        "shap_log_odds": -0.5472,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": true
+      },
+      {
+        "feature_id": "33",
+        "display_name": "Sensor 33",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 9.193,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 82.7,
+        "shap_log_odds": 0.5348,
+        "effect": "raises predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "59",
+        "display_name": "Sensor 59",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 1.4845,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 51.4,
+        "shap_log_odds": -0.2907,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "573",
+        "display_name": "Sensor 573",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 0.4432,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 88.3,
+        "shap_log_odds": -0.2876,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "41",
+        "display_name": "Sensor 41",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 2.067,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 5.6,
+        "shap_log_odds": 0.2648,
+        "effect": "raises predicted risk",
+        "drifting_in_final_period": false
+      }
+    ]
+  },
+  {
+    "row_id": 1513,
+    "time": "2008-10-15 00:47:00",
+    "risk_score": 0.4286,
+    "score_note": "model score, not a calibrated probability",
+    "base_value_log_odds": 0.7456,
+    "top_contributors": [
+      {
+        "feature_id": "573",
+        "display_name": "Sensor 573",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 0.222,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 20.3,
+        "shap_log_odds": -0.5377,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "288",
+        "display_name": "Sensor 288",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 0.0018,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 12.9,
+        "shap_log_odds": -0.358,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "64",
+        "display_name": "Sensor 64",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 15.2427,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 12.4,
+        "shap_log_odds": -0.3562,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "426",
+        "display_name": "Sensor 426",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 0.5305,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 7.8,
+        "shap_log_odds": 0.3304,
+        "effect": "raises predicted risk",
+        "drifting_in_final_period": false
+      },
+      {
+        "feature_id": "33",
+        "display_name": "Sensor 33",
+        "physical_meaning": null,
+        "meaning_status": "unknown",
+        "value": 8.8054,
+        "was_missing_and_imputed": false,
+        "dev_percentile": 56.6,
+        "shap_log_odds": -0.3095,
+        "effect": "lowers predicted risk",
+        "drifting_in_final_period": false
+      }
+    ]
+  }
+]
