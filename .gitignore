@@ -1,6 +1,10 @@
 .venv/
 __pycache__/
 .ipynb_checkpoints/
-*.pyc
+*.py[cod]
 
+# Local secrets and environment-specific files
+.env
+
+# Raw, intermediate, and metadata files are local dataset artifacts.
 data/
