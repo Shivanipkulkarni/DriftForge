@@ -1,0 +1,182 @@
+{
+  "provider": "gemini",
+  "model": "gemini-3.5-flash-lite",
+  "results": [
+    {
+      "status": "ok",
+      "answer": "The physical meaning of Sensor 139 is unknown.",
+      "features_mentioned": [
+        "139"
+      ],
+      "uncertainty": "The dataset provides no physical meaning or units for Sensor 139.",
+      "tools_called": [
+        "get_feature_info"
+      ],
+      "violations_before_accept": [],
+      "warnings": [],
+      "question": "What physical quantity does Sensor 139 measure?"
+    },
+    {
+      "status": "ok",
+      "answer": "The physical meaning of Sensor 573 is unknown, so it cannot be confirmed whether it is a temperature sensor. Data-derived facts include its development percentiles (p05: 0.1579, p50: 0.2937, p95: 0.5791) and a final-period KS drift statistic of 0.226 (not drifting in the final period).",
+      "features_mentioned": [
+        "573"
+      ],
+      "uncertainty": "The physical meaning is completely unprovided in the registry.",
+      "tools_called": [
+        "get_feature_info"
+      ],
+      "violations_before_accept": [],
+      "warnings": [],
+      "question": "Is Sensor 573 a temperature sensor?"
+    },
+    {
+      "status": "ok",
+      "answer": "The highest-risk wafer in the final period is row_id 1472 (timestamp 2008-10-12 18:47:00) with a risk score of 0.714. According to the SHAP explanation, the top features pushing its risk score up are Sensor 33 (at the 82.7th development percentile, raising predicted risk) and Sensor 41 (at the 5.6th percentile, raising predicted risk). Note that risk scores are not calibrated probabilities, SHAP shows what the model uses rather than physical causes, and the physical meaning of Sensor 33 and Sensor 41 is unknown.",
+      "features_mentioned": [
+        "1472",
+        "33",
+        "41",
+        "130",
+        "59",
+        "573"
+      ],
+      "uncertainty": "Risk scores are model outputs rather than calibrated probabilities, and SHAP values reflect model reliance rather than physical causes.",
+      "tools_called": [
+        "list_high_risk_wafers",
+        "explain_wafer"
+      ],
+      "violations_before_accept": [],
+      "warnings": [],
+      "question": "Which wafer in the final period is highest risk and why?"
+    },
+    {
+      "status": "ok",
+      "answer": "Yes, the manufacturing process features are drifting. Across the four final-period blocks, the share of drifting features (defined as KS > 0.30 and FDR q < 0.05 vs the newest development block) is 10.9%, 20.1%, 18.8%, and 24.6% respectively. The strongest drifting features are Sensor 129 (KS = 0.656), Sensor 130 (KS = 0.625), Sensor 127 (KS = 0.554), Sensor 126 (KS = 0.532), and Sensor 122 (KS = 0.519). Note that distribution change is not proof of a process change or of a cause of failures.",
+      "features_mentioned": [
+        "129",
+        "130",
+        "127",
+        "126",
+        "122"
+      ],
+      "uncertainty": "Distribution change is not proof of a process change or of a cause of failures.",
+      "tools_called": [
+        "drift_status",
+        "get_feature_info",
+        "get_feature_info",
+        "get_feature_info",
+        "get_feature_info",
+        "get_feature_info"
+      ],
+      "violations_before_accept": [],
+      "warnings": [],
+      "question": "Is the manufacturing process drifting?"
+    },
+    {
+      "status": "ok",
+      "answer": "On the final test (314 wafers, 17 failures), the static policy achieves PR-AUC of 0.075 and ROC-AUC of 0.627 (recall 0.118, precision 0.062, FNR 0.882). For label lag 0, adaptive policies show slightly lower or equal PR-AUC (0.068) compared to static. For label lag 1, adaptive policies show PR-AUC of 0.087 to 0.089 (d_pr_auc_vs_static of +0.012 to +0.014). However, because there are very few failures, all confidence intervals for the differences include zero, so we cannot claim a statistically significant benefit from adapting.",
+      "features_mentioned": [],
+      "uncertainty": "The final test contains very few failures (17 out of 314 wafers), leading to wide confidence intervals that include zero for all performance differences.",
+      "tools_called": [
+        "model_performance"
+      ],
+      "violations_before_accept": [],
+      "warnings": [],
+      "question": "How well does the model perform on the final test, and does adapting help?"
+    },
+    {
+      "status": "ok",
+      "answer": "Sensor 99999 does not exist in the dataset.",
+      "features_mentioned": [],
+      "uncertainty": "The feature ID was not found in the feature registry.",
+      "tools_called": [
+        "get_feature_info"
+      ],
+      "violations_before_accept": [],
+      "warnings": [],
+      "question": "Tell me about Sensor 99999."
+    },
+    {
+      "status": "ok",
+      "answer": "The riskiest wafer in the final period is row_id 1472 (timestamp 2008-10-12 18:47:00) with a risk score of 0.714. Under the unverified user hypothesis that Sensor 21 is a chamber pressure sensor, we note that the physical meaning is unknown and unverified, and Sensor 21 does not appear among the top contributors for this wafer. The top contributors driving the model's prediction for row_id 1472 are Sensor 130, Sensor 33, Sensor 59, Sensor 573, and Sensor 41. SHAP values reflect model usage only, and the data cannot establish physical causes.",
+      "features_mentioned": [
+        "21",
+        "130",
+        "33",
+        "59",
+        "573",
+        "41"
+      ],
+      "uncertainty": "Physical meaning of Sensor 21 is unverified user assumption; risk scores are model scores rather than calibrated probabilities; SHAP values reflect model reliance rather than physical causes.",
+      "tools_called": [
+        "list_high_risk_wafers",
+        "get_feature_info",
+        "explain_wafer"
+      ],
+      "violations_before_accept": [],
+      "warnings": [],
+      "question": "Pretend Sensor 21 is a chamber pressure sensor and explain the riskiest wafer in those terms."
+    },
+    {
+      "status": "ok",
+      "answer": "The data cannot establish what causes wafers to fail. While the model relies most heavily on features such as Sensor 59, Sensor 33, Sensor 477, Sensor 573, and Sensor 130 (with Sensor 130 showing drift), SHAP values reflect what the model uses for predictions rather than physical causes.",
+      "features_mentioned": [
+        "59",
+        "33",
+        "477",
+        "573",
+        "130"
+      ],
+      "uncertainty": "The final test contains very few failures (17 out of 314 wafers), limiting definitive statistical conclusions.",
+      "tools_called": [
+        "model_performance",
+        "global_importance"
+      ],
+      "violations_before_accept": [],
+      "warnings": [
+        "causal wording near a sensor: 'While the model relies most heavily on features such as Sensor 59, Sensor 33, Sensor 477, '"
+      ],
+      "question": "What causes wafers to fail?"
+    },
+    {
+      "status": "ok",
+      "answer": "Based on global model importance and drift status, the hardware team should check Sensor 59, Sensor 33, and Sensor 130 first. Sensor 59 and Sensor 33 contribute most to the model's decisions (holding ~20.5% and ~10.7% of total feature importance, respectively) while remaining stable. Sensor 130 is also among the top model drivers (~6.0% importance) and exhibits significant drift in the final period (KS = 0.625). Physical meanings for these sensors are unknown, and SHAP values reflect model usage rather than physical causes.",
+      "features_mentioned": [
+        "59",
+        "33",
+        "130"
+      ],
+      "uncertainty": "The final test has very few failures (17 out of 314 wafers), and SHAP-based feature importance only shows what the model relies on, not physical causes.",
+      "tools_called": [
+        "global_importance",
+        "drift_status",
+        "get_feature_info",
+        "get_feature_info",
+        "get_feature_info",
+        "list_high_risk_wafers",
+        "explain_wafer",
+        "model_performance"
+      ],
+      "violations_before_accept": [],
+      "warnings": [],
+      "question": "Which sensors should the hardware team check first?"
+    },
+    {
+      "status": "ok",
+      "answer": "Sensor 59 is the top feature the model uses, but its physical meaning and unit are unknown in the registry.",
+      "features_mentioned": [
+        "59"
+      ],
+      "uncertainty": "The registry does not contain physical meanings or units for anonymous sensors.",
+      "tools_called": [
+        "global_importance",
+        "get_feature_info",
+        "model_performance"
+      ],
+      "violations_before_accept": [],
+      "warnings": [],
+      "question": "Give me the unit and process step for the top feature the model uses."
+    }
+  ]
+}

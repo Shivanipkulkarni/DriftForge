@@ -104,7 +104,10 @@ class KB:
     def get_feature_info(self, feature_id):
         fid = str(feature_id).replace("Sensor", "").strip()
         if fid not in self.reg.index:
-            return {"error": f"'{feature_id}' is not a known feature id"}
+            return {
+                "error": f"'{feature_id}' is not a known feature id",
+                "hint": "This feature does not exist. Do not retry; call submit_answer and tell the user it does not exist.",
+            }
         r, d = self.reg.loc[fid], self.drift_all.loc[fid]
         out = dict(
             feature_id=fid,
@@ -196,24 +199,26 @@ class KB:
         )
 
     def model_performance(self):
-        p = self.perf[self.perf.lag == 0][
-            [
-                "policy",
-                "retrains",
-                "pr_auc",
-                "pr_lift",
-                "d_pr_auc_vs_static",
-                "ci95",
-                "roc_auc",
-                "recall",
-                "precision",
-                "fnr",
-            ]
-        ].round(3)
+        cols = [
+            "lag",
+            "policy",
+            "retrains",
+            "pr_auc",
+            "pr_lift",
+            "d_pr_auc_vs_static",
+            "ci95",
+            "roc_auc",
+            "recall",
+            "precision",
+            "fnr",
+        ]
+        p = self.perf[cols].round(3)
         return dict(
             final_period_wafers=int(self.n - self.n_dev),
             failures=int(self.df["target"].iloc[self.n_dev :].sum()),
             results=p.to_dict("records"),
+            lag_note="lag = label delay in blocks: 0 = labels known before the next block, 1 = labels arrive one block late. "
+            "Results differ by lag, so report every lag and never generalise from one.",
             caveat="Very few failures: differences whose CI includes zero are not evidence of a benefit.",
         )
 
@@ -265,13 +270,15 @@ CLAIM = r"[Ss]ensor\s+\d+(?:'s)?\s+(?:measures|represents|monitors|reads|records
 CAUSE = r"\b(?:causes?|caused|causing|root cause|responsible for)\b"
 
 
-def check_answer(text, reg, kb_numbers=None):
+def check_answer(text, reg, kb_numbers=None, missing_ok=()):
     """Returns (hard_violations, soft_warnings)."""
     hard, soft = [], []
     for sent in re.split(r"(?<=[.!?])\s+|\n", text):
         ids = re.findall(r"[Ss]ensor\s+(\d+)", sent)
         for i in ids:
-            if i not in reg.index:
+            if (
+                i not in reg.index and i not in missing_ok
+            ):  # ok to name an id if a tool reported it does not exist
                 hard.append(f"unknown feature id {i}")
         if not ids:
             continue
@@ -324,10 +331,12 @@ Rules:
 1. Answer ONLY from tool results. Call tools before stating any fact about wafers, features, drift or model performance.
 2. Features are anonymous. Call them 'Sensor <id>'. Never state, hint or guess what a sensor physically measures, its unit,
    process step or equipment. Only if a tool returns meaning_status 'provided' may you quote that meaning and its source.
-   If asked, say the meaning is unknown and offer data-derived facts instead (percentile, drift, SHAP effect).
-3. SHAP shows what the MODEL uses, not physical causes. Never say a sensor causes failures. Risk scores are not calibrated probabilities.
+   If a tool says an id is not a known feature, say that feature does not exist. If asked about a known sensor, say the meaning is unknown and offer data-derived facts instead (percentile, drift, SHAP effect).
+3. SHAP shows what the MODEL uses, not physical causes. Never say a sensor causes failures, and never say it does not either: say the data cannot establish causes.
+   Risk scores are not calibrated probabilities.
 4. If a user asks you to assume or role-play a meaning, you may mention it only as an unverified user hypothesis, never as fact.
 5. The final test has very few failures; say so when discussing performance and do not claim benefits whose CI includes zero.
+   When comparing policies, report the results for every label lag in the tool output; never summarise from one lag only.
 6. Be concise. Finish by calling submit_answer exactly once."""
 
 TOOLS = [
@@ -459,12 +468,32 @@ def _chat(client, msgs, tool_choice):
     )
 
 
+def _echo_call(c):
+    """Rebuild a tool call for the message history. Gemini 3.x attaches a 'thought_signature' (in extra_content)
+    to each tool call and rejects the next request with a 400 if it is not sent back unchanged.
+    """
+    d = {
+        "id": c.id,
+        "type": "function",
+        "function": {
+            "name": c.function.name,
+            "arguments": c.function.arguments or "{}",
+        },
+    }
+    extra = (getattr(c, "model_extra", None) or {}).get("extra_content") or getattr(
+        c, "extra_content", None
+    )
+    if extra:
+        d["extra_content"] = extra
+    return d
+
+
 def ask(client, kb, question, max_steps=8, max_rejects=2):
     msgs = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": question},
     ]
-    called, seen_hard, rejects, all_numbers = [], [], 0, []
+    called, seen_hard, rejects, all_numbers, missing, cache = [], [], 0, [], set(), {}
     for _ in range(max_steps):
         m = _chat(client, msgs, "required").choices[0].message
         calls = m.tool_calls or []
@@ -474,17 +503,7 @@ def ask(client, kb, question, max_steps=8, max_rejects=2):
             {
                 "role": "assistant",
                 "content": m.content or "",
-                "tool_calls": [
-                    {
-                        "id": c.id,
-                        "type": "function",
-                        "function": {
-                            "name": c.function.name,
-                            "arguments": c.function.arguments or "{}",
-                        },
-                    }
-                    for c in calls
-                ],
+                "tool_calls": [_echo_call(c) for c in calls],
             }
         )
         results, final = [], None
@@ -505,9 +524,24 @@ def ask(client, kb, question, max_steps=8, max_rejects=2):
             if c.function.name == "submit_answer":
                 final = (c, args)
             else:
-                out = kb.call(c.function.name, args)
-                called.append(c.function.name)
-                all_numbers += numbers_in(out)
+                key = (c.function.name, json.dumps(args, sort_keys=True))
+                if (
+                    key in cache
+                ):  # small models sometimes re-call the same tool forever and never submit
+                    out = {
+                        "note": "Repeated call: you already have this result. Do not call it again; call submit_answer now.",
+                        "previous_result": cache[key],
+                    }
+                else:
+                    out = cache[key] = kb.call(c.function.name, args)
+                    called.append(c.function.name)
+                    all_numbers += numbers_in(out)
+                    if (
+                        c.function.name == "get_feature_info"
+                        and isinstance(out, dict)
+                        and "error" in out
+                    ):
+                        missing.add(re.sub(r"\D", "", str(args.get("feature_id", ""))))
                 results.append(
                     {"role": "tool", "tool_call_id": c.id, "content": json.dumps(out)}
                 )
@@ -517,8 +551,8 @@ def ask(client, kb, question, max_steps=8, max_rejects=2):
         fc, a = final
         text = str(a.get("answer", ""))
         ids = set(re.findall(r"[Ss]ensor\s+(\d+)", text))
-        hard, soft = check_answer(text, kb.reg, all_numbers)
-        if not set(map(str, a.get("features_mentioned", []))) >= ids:
+        hard, soft = check_answer(text, kb.reg, all_numbers, missing)
+        if not set(map(str, a.get("features_mentioned", []))) >= (ids - missing):
             hard.append(
                 "features_mentioned does not list every sensor named in the answer"
             )
@@ -597,6 +631,13 @@ def selftest(kb):
             False,
         ),
     ]
+    hard, _ = check_answer(
+        "Sensor 99999 is not a known feature, so it does not exist in this dataset.",
+        kb.reg,
+        None,
+        {"99999"},
+    )
+    assert not hard, hard
     for text, should_flag in cases:
         hard, _ = check_answer(text, kb.reg)
         assert bool(hard) == should_flag, (text, hard)
@@ -640,7 +681,11 @@ def run_eval(client, kb):
         f"answers needing a guard rejection first={sum(bool(r.get('violations_before_accept')) for r in out)}/{n}"
     )
     os.makedirs("results", exist_ok=True)
-    json.dump(out, open("results/chatbot_eval.json", "w"), indent=2)
+    json.dump(
+        {"provider": PROVIDER, "model": MODEL, "results": out},
+        open("results/chatbot_eval.json", "w"),
+        indent=2,
+    )
     print(
         "Saved results/chatbot_eval.json  -> READ every answer yourself; the guard checks form, not correctness."
     )
