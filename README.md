@@ -1,6 +1,6 @@
 # DriftForge
 
-DriftForge is a leakage-safe research pipeline for semiconductor failure prediction on time-ordered SECOM data. It compares static and adaptive XGBoost models, evaluates feature-selection strategies, measures label-free feature drift, and produces SHAP explanations and paper-ready assets.
+DriftForge is a leakage-safe research pipeline for semiconductor failure prediction on time-ordered SECOM data. It compares static and adaptive XGBoost models, evaluates feature-selection strategies, measures label-free feature drift, tests whether particle-swarm-tuned XGBoost (PSO-XGBoost) helps under drift, and produces SHAP explanations and paper-ready assets. It builds on prior work on XGBoost-based wafer yield prediction (for example Xu, Qin & Sun, 2022, who identify poor cross-batch generalization as a core problem) and differs from it in evaluation: strictly forward in time, on the public SECOM dataset.
 
 ## Repository layout
 
@@ -48,6 +48,9 @@ python src/05_final_test.py
 python src/06_shap_registry.py
 python src/07_chatbot.py --selftest
 python src/08_paper_assets.py
+python src/09_pso_xgboost.py
+python src/09_pso_xgboost.py --final
+python src/10_paper_protocol_comparison.py
 ```
 
 Run the scripts in order from the repository root. Steps 2-4 operate on the development period, Step 5 evaluates the frozen final test period, and Steps 6-8 consume the generated results.
@@ -109,12 +112,27 @@ python src/07_chatbot.py --eval --provider groq
 
 `08_paper_assets.py` reads available result files and writes 300-DPI figures and an Excel workbook to `paper/`.
 
+### Steps 9-10: PSO-XGBoost and the protocol comparison
+
+`09_pso_xgboost.py` compares default XGBoost, random search, and PSO over eight XGBoost hyperparameters (`n_estimators`, `max_depth`, `learning_rate`, `subsample`, `colsample_bytree`, `min_child_weight`, `reg_lambda`, `gamma`), all with the frozen feature config from Step 3 and the frozen temporal folds. Random search gets the same number of evaluations as PSO, so any gain has to come from the swarm and not from tuning in general.
+
+- The search only sees folds 1-2. Fold 3 is held out from the search and used once to compare the frozen configurations.
+- The frozen parameters are written to `results/pso_best.json` before the held-out fold is scored.
+- `--final` scores the frozen configurations on the untouched final test. Like Step 5, it refuses to overwrite existing results unless `FORCE=1` is set.
+- Useful options: `--particles` (default 12), `--iters` (default 10), `--seed`.
+
+`10_paper_protocol_comparison.py` evaluates the same configurations with a shuffled, stratified 80/20 split, the way many SECOM papers do. It is **not** the project's primary protocol and is not leakage-safe with respect to time. It exists to show how much a random split flatters the same models, and it writes `results/protocol_gap.csv`.
+
+**Reference run (one environment, 16 particles x 12 iterations, 208 evaluations per method).** Search-fold PR-AUC rose from 0.128 (default) to 0.314 (PSO) and 0.274 (random search). On held-out fold 3, PSO matched default XGBoost (PR-AUC 0.074 vs 0.074). On the final test, PSO scored PR-AUC 0.055 vs 0.068 for default (paired 95% CI of the difference: -0.028 to +0.003). The improvement on the search folds did not carry forward in time, so on this data PSO tuning mostly fits the folds it was tuned on. Final-test numbers depend on library versions; rerun Steps 9-10 in your own environment before quoting them.
+
 ## Main outputs
 
 - `results/static_baseline_*.csv`
 - `results/featsel_*.csv`
 - `results/adaptive_*.csv`
 - `results/final_test_*.csv`
+- `results/pso_search_history.csv`, `results/pso_best.json`, `results/pso_holdout_summary.csv`, `results/pso_final_*.csv`
+- `results/paper_protocol_*.csv`, `results/protocol_gap.csv`
 - `results/shap_global.csv`
 - `results/shap_test_values.csv`
 - `results/explanations.json`

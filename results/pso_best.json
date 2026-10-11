@@ -1,0 +1,47 @@
+{
+  "default": {
+    "params": {
+      "n_estimators": 300,
+      "max_depth": 3,
+      "learning_rate": 0.05,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "min_child_weight": 1.0,
+      "reg_lambda": 1.0,
+      "gamma": 0.0
+    },
+    "search_pr_auc": 0.15357688717891585
+  },
+  "random": {
+    "params": {
+      "n_estimators": 392,
+      "max_depth": 3,
+      "learning_rate": 0.01971507559212222,
+      "subsample": 0.6427680321017242,
+      "colsample_bytree": 0.7264983635930279,
+      "min_child_weight": 6.8612865103903635,
+      "reg_lambda": 0.27402467721958396,
+      "gamma": 2.997339368907288
+    },
+    "search_pr_auc": 0.29155862880183536
+  },
+  "pso": {
+    "params": {
+      "n_estimators": 376,
+      "max_depth": 4,
+      "learning_rate": 0.059530398062239774,
+      "subsample": 0.7935761226095146,
+      "colsample_bytree": 0.46151395164281794,
+      "min_child_weight": 2.1756107460009195,
+      "reg_lambda": 2.5530221412750405,
+      "gamma": 3.529767146788268
+    },
+    "search_pr_auc": 0.3097894494746271
+  },
+  "budget_evaluations": 132,
+  "search_folds": [
+    1,
+    2
+  ],
+  "heldout_fold": 3
+}
