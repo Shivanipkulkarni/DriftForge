@@ -1,6 +1,3 @@
-# src/08_paper_assets.py
-# Turns results/*.csv into paper-ready figures (PNG, 300 dpi) and one Excel workbook of tables.
-# Needs: pip install openpyxl matplotlib   | Output goes to paper/
 import importlib.metadata as md
 import json, os, platform, re, subprocess
 import numpy as np
@@ -222,6 +219,8 @@ if sg is not None:
 # ------------------------------------------------ Table 7: chatbot evaluation
 if os.path.exists("results/chatbot_eval.json"):
     ev = json.load(open("results/chatbot_eval.json"))
+    if isinstance(ev, dict):  # newer format: {"provider": ..., "model": ..., "results": [...]}
+        ev = ev["results"]
     tables["T7_chatbot_eval"] = pd.DataFrame(
         [
             dict(
@@ -239,6 +238,51 @@ if os.path.exists("results/chatbot_eval.json"):
     )
 else:
     print("  (skipped: results/chatbot_eval.json not found)")
+
+# ------------------------------------------------ Tables 8-11 + Figure 9: PSO-XGBoost and protocol gap (Steps 9-10)
+ph = read("results/pso_holdout_summary.csv")
+if ph is not None:
+    tables["T8_pso_holdout"] = ph.round(3)
+pf = read("results/pso_final_summary.csv")
+if pf is not None:
+    tables["T9_pso_final"] = pf.round(3)
+if os.path.exists("results/pso_best.json"):
+    best = json.load(open("results/pso_best.json"))
+    tables["T10_pso_params"] = (
+        pd.DataFrame(
+            {
+                m: {**best[m]["params"], "search_pr_auc": best[m]["search_pr_auc"]}
+                for m in ("default", "random", "pso")
+            }
+        )
+        .round(4)
+        .rename_axis("parameter")
+        .reset_index()
+    )
+gap = read("results/protocol_gap.csv")
+if gap is not None:
+    tables["T11_protocol_gap"] = gap.rename(
+        columns={
+            "pr_auc_mean": "pr_auc_shuffled",
+            "roc_auc_mean": "roc_auc_shuffled",
+            "pr_auc": "pr_auc_temporal_final",
+            "roc_auc": "roc_auc_temporal_final",
+        }
+    ).round(3)
+    fig, axes = plt.subplots(1, 2, figsize=(8, 3.6))
+    xs, w = np.arange(len(gap)), 0.38
+    for ax, (a, b, lab) in zip(
+        axes, [("pr_auc_mean", "pr_auc", "PR-AUC"), ("roc_auc_mean", "roc_auc", "ROC-AUC")]
+    ):
+        ax.bar(xs - w / 2, gap[a], w, color="#c0392b", label="Shuffled split (leaky)")
+        ax.bar(xs + w / 2, gap[b], w, color="#1f4e79", label="Temporal final test")
+        ax.set_xticks(xs)
+        ax.set_xticklabels(gap.method)
+        ax.set_ylabel(lab)
+        ax.set_ylim(0, max(gap[a].max(), gap[b].max()) * 1.3)  # headroom for the legend
+    axes[0].legend(frameon=False, loc="upper right")
+    fig.suptitle("Same models, two evaluation protocols")
+    save(fig, "fig9_protocol_gap")
 
 # ------------------------------------------------ write workbook + reproducibility manifest
 with pd.ExcelWriter(f"{OUT}/tables.xlsx", engine="openpyxl") as xl:
@@ -273,7 +317,7 @@ json.dump(
                 "xgboost",
                 "shap",
                 "scipy",
-                "anthropic",
+                "openai",
             ]
         },
         selected_feature_config=sel,

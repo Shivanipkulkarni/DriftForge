@@ -1,14 +1,14 @@
 {
-  "python": "3.13.14",
-  "git_commit": "02704943d3820fa19d8f3d38023a7054d788c38c",
+  "python": "3.11.0",
+  "git_commit": "46236a190062c04f238067a6f4d4c4fc8d64ffc4",
   "packages": {
     "pandas": "3.0.6",
-    "numpy": "2.5.3",
+    "numpy": "2.4.6",
     "scikit-learn": "1.9.1",
-    "xgboost": "3.4.1",
-    "shap": "0.52.0",
-    "scipy": "1.18.1",
-    "anthropic": "1.11.0"
+    "xgboost": "3.2.0",
+    "shap": "0.51.0",
+    "scipy": "1.17.1",
+    "openai": "3.29.0"
   },
   "selected_feature_config": {
     "config": "consensus_20",
