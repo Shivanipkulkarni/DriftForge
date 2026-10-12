@@ -2,12 +2,15 @@
 # Yield-analysis assistant: tool calling + structured final answer + anti-hallucination guard.
 #   python src/07_chatbot.py --selftest   # no API key needed: checks tools and guard
 #   python src/07_chatbot.py --eval       # adversarial question set -> results/chatbot_eval.json
-#   python src/07_chatbot.py              # interactive chat
+#   python src/07_chatbot.py              # open browser chat
+#   python src/07_chatbot.py --terminal   # interactive terminal chat
 # LLM: any OpenAI-compatible provider (free tiers: Groq, Gemini). Needs: pip install openai
 #   Groq  : put GROQ_API_KEY in .env    (https://console.groq.com)        -> python src/07_chatbot.py --provider groq
 #   Gemini: put GEMINI_API_KEY in .env  (https://aistudio.google.com)     -> python src/07_chatbot.py --provider gemini
 # Override the model with CHATBOT_MODEL if a default has been retired.
-import json, os, re, sys, time
+import argparse, json, os, re, time, webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy.stats import ks_2samp, false_discovery_control
@@ -495,11 +498,10 @@ def _echo_call(c):
     return d
 
 
-def ask(client, kb, question, max_steps=8, max_rejects=2):
-    msgs = [
-        {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": question},
-    ]
+def ask(client, kb, question, max_steps=8, max_rejects=2, history=None):
+    msgs = [{"role": "system", "content": SYSTEM}]
+    msgs.extend(history or [])
+    msgs.append({"role": "user", "content": question})
     called, seen_hard, rejects, all_numbers, missing, cache = [], [], 0, [], set(), {}
     for _ in range(max_steps):
         m = _chat(client, msgs, "required").choices[0].message
@@ -698,32 +700,141 @@ def run_eval(client, kb):
     )
 
 
-if __name__ == "__main__":
+class ChatHandler(BaseHTTPRequestHandler):
+    def _send_json(self, status, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path != "/":
+            self._send_json(404, {"error": "Not found"})
+            return
+        try:
+            page = Path(__file__).with_name("chatbot.html").read_bytes()
+        except OSError as exc:
+            self._send_json(500, {"error": f"Could not load chatbot page: {exc}"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(page)
+
+    def do_POST(self):
+        if self.path != "/api/chat":
+            self._send_json(404, {"error": "Not found"})
+            return
+
+        expected_origin = f"http://127.0.0.1:{self.server.server_port}"
+        origin = self.headers.get("Origin")
+        if origin and origin != expected_origin:
+            self._send_json(403, {"error": "Requests must come from the local chatbot page"})
+            return
+        if self.headers.get_content_type() != "application/json":
+            self._send_json(415, {"error": "Expected application/json"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 65536:
+                raise ValueError("Request body must be between 1 and 65536 bytes")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError("Request body must be a JSON object")
+            question = payload.get("question")
+            if not isinstance(question, str) or not question.strip() or len(question) > 4000:
+                raise ValueError("Question must be 1 to 4000 characters")
+            history = payload.get("history", [])
+            if not isinstance(history, list) or len(history) > 12:
+                raise ValueError("History must contain at most 12 messages")
+            for message in history:
+                if (
+                    not isinstance(message, dict)
+                    or message.get("role") not in ("user", "assistant")
+                    or not isinstance(message.get("content"), str)
+                    or len(message["content"]) > 4000
+                ):
+                    raise ValueError("Each history message must have a valid role and text content")
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+
+        try:
+            result = ask(
+                self.server.chat_client,
+                self.server.knowledge_base,
+                question.strip(),
+                history=history,
+            )
+        except Exception as exc:
+            self._send_json(502, {"error": f"Chat request failed: {type(exc).__name__}: {exc}"})
+            return
+        self._send_json(200, result)
+
+
+def run_web(client, kb, port):
+    server = ThreadingHTTPServer(("127.0.0.1", port), ChatHandler)
+    server.chat_client = client
+    server.knowledge_base = kb
+    url = f"http://127.0.0.1:{server.server_port}/"
+    print(f"Starting the chatbot in your browser: {url}")
+    if not webbrowser.open(url, new=1):
+        print(f"Open this address in your browser: {url}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping chatbot server.")
+    finally:
+        server.server_close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Yield-analysis chatbot")
+    parser.add_argument("--provider", choices=PROVIDERS)
+    parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--eval", action="store_true")
+    parser.add_argument("--terminal", action="store_true", help="Use the terminal chat instead of the browser")
+    parser.add_argument("--port", type=int, default=8765, help="Local browser app port (default: 8765)")
+    args = parser.parse_args()
+    if not 1 <= args.port <= 65535:
+        parser.error("--port must be between 1 and 65535")
+
     kb = KB()
-    if "--selftest" in sys.argv:
+    if args.selftest:
         selftest(kb)
-        sys.exit()
-    if "--provider" in sys.argv:
-        PROVIDER = sys.argv[sys.argv.index("--provider") + 1]
+        return
+
+    global PROVIDER, MODEL
+    PROVIDER = args.provider or PROVIDER
     if PROVIDER not in PROVIDERS:
-        sys.exit(f"Unknown provider '{PROVIDER}'. Choose from: {', '.join(PROVIDERS)}")
+        parser.error(f"Unknown provider '{PROVIDER}'. Choose from: {', '.join(PROVIDERS)}")
     base_url, key_env, default_model = PROVIDERS[PROVIDER]
     MODEL = MODEL or default_model
     if not os.environ.get(key_env):
-        sys.exit(
-            f"Add {key_env}=... to a .env file in the project root (see .env.example)"
-        )
+        parser.error(f"Add {key_env}=... to a .env file in the project root (see .env.example)")
     from openai import OpenAI
 
     client = OpenAI(base_url=base_url, api_key=os.environ[key_env])
-    if "--eval" in sys.argv:
+    if args.eval:
         run_eval(client, kb)
-        sys.exit()
-    print(
-        f"Yield assistant ({PROVIDER}: {MODEL}). Final period = wafers {kb.n_dev}-{kb.n - 1}. Type 'quit' to exit."
-    )
-    while (q := input("\nYou: ").strip()).lower() not in ("quit", "exit"):
-        r = ask(client, kb, q)
-        print(f"\nAssistant: {r['answer']}")
-        if r["status"] == "ok" and r.get("uncertainty"):
-            print(f"\nA note about this answer: {r['uncertainty']}")
+        return
+    if args.terminal:
+        print(
+            f"Yield assistant ({PROVIDER}: {MODEL}). Final period = wafers {kb.n_dev}-{kb.n - 1}. Type 'quit' to exit."
+        )
+        while (q := input("\nYou: ").strip()).lower() not in ("quit", "exit"):
+            r = ask(client, kb, q)
+            print(f"\nAssistant: {r['answer']}")
+            if r["status"] == "ok" and r.get("uncertainty"):
+                print(f"\nA note about this answer: {r['uncertainty']}")
+        return
+    run_web(client, kb, args.port)
+
+
+if __name__ == "__main__":
+    main()

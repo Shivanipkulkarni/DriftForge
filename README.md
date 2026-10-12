@@ -96,6 +96,8 @@ $env:GEMINI_API_KEY = "your-key"
 python src/07_chatbot.py --provider gemini
 ```
 
+The chatbot opens in your default browser and serves its UI locally at `127.0.0.1:8765`. Keep the Python process running while chatting; press `Ctrl+C` in the terminal to stop it. Use `--port` to choose a different local port, or add `--terminal` to use the original terminal interface.
+
 You can override the provider and model with `LLM_PROVIDER` and `CHATBOT_MODEL`. The self-test does not call an API:
 
 ```powershell

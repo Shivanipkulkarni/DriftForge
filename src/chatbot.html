@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f3f6fc">
+  <title>Yield Intelligence | Semiconductor Analysis</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #17243b;
+      background: #f3f6fc;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; min-height: 100vh; }
+    .layout { width: 100%; height: 100vh; height: 100dvh; padding: 0 clamp(18px, 4vw, 64px); display: flex; flex-direction: column; }
+    header { flex: 0 0 auto; min-height: 88px; display: flex; align-items: center; border-bottom: 1px solid #e3e9f3; }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .mark { position: relative; display: grid; width: 46px; height: 46px; place-items: center; overflow: hidden; border-radius: 15px; color: white; background: linear-gradient(145deg, #3678ec, #183e91); box-shadow: 0 7px 16px #245bb833; font-size: 22px; font-weight: 800; }
+    .mark::after { position: absolute; right: 5px; bottom: 5px; width: 7px; height: 7px; border: 2px solid #fff; border-radius: 50%; background: #62d6b0; content: ""; }
+    h1 { margin: 0; color: #17243b; font-size: clamp(17px, 2vw, 20px); font-weight: 760; letter-spacing: -.035em; }
+    .subtitle { margin-top: 4px; color: #74819a; font-size: 12px; letter-spacing: .015em; }
+    main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+    .intro { flex: 0 0 auto; padding: clamp(22px, 4vh, 42px) 0 22px; border-bottom: 1px solid #e3e9f3; }
+    .eyebrow { margin: 0 0 9px; color: #3268c8; font-size: 11px; font-weight: 750; letter-spacing: .15em; text-transform: uppercase; }
+    .intro h2 { max-width: none; margin: 0; color: #17243b; font-size: clamp(30px, 5vw, 52px); font-weight: 760; line-height: 1.06; letter-spacing: -.055em; white-space: nowrap; }
+    .intro h2 span { color: #3268c8; }
+    .intro p { max-width: 720px; margin: 12px 0 0; color: #66748d; line-height: 1.6; font-size: 14px; }
+    .suggestions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 20px; }
+    .suggestions button { min-height: 38px; padding: 8px 14px; border: 1px solid #dce4f0; border-radius: 999px; color: #34445f; background: #fff; box-shadow: 0 2px 5px #17243b08; cursor: pointer; font: inherit; font-size: 12px; transition: border-color .15s ease, background .15s ease, transform .15s ease; }
+    .suggestions button:hover { transform: translateY(-1px); border-color: #99b7ef; background: #f8faff; }
+    #messages { flex: 1 1 auto; min-height: 100px; display: flex; flex-direction: column; gap: 18px; padding: 24px 0; overflow-y: auto; }
+    .message { max-width: min(78%, 820px); padding: 14px 18px; border: 1px solid transparent; border-radius: 18px; font-size: 14px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .user { align-self: flex-end; color: white; background: linear-gradient(135deg, #3475e5, #2458b5); box-shadow: 0 6px 18px #245bb826; border-bottom-right-radius: 6px; }
+    .assistant { align-self: flex-start; color: #34445f; background: white; border-color: #e2e8f2; border-bottom-left-radius: 6px; box-shadow: 0 5px 18px #17243b08; }
+    .error { color: #b42318; background: #fef3f2; }
+    .note { margin-top: 9px; color: #667085; font-size: 12px; }
+    .composer { display: flex; gap: 10px; padding: 17px 20px; border-top: 1px solid #eaecf0; }
+    textarea { flex: 1; min-height: 48px; max-height: 140px; resize: vertical; padding: 13px 14px; border: 1px solid #d0d5dd; border-radius: 12px; outline: none; font: inherit; font-size: 14px; }
+    textarea:focus { border-color: #528bff; box-shadow: 0 0 0 3px #d1e0ff; }
+    #send { align-self: flex-end; min-width: 82px; height: 46px; border: 0; border-radius: 12px; color: white; background: #174ea6; font: inherit; font-weight: 650; cursor: pointer; }
+    #send:disabled { opacity: .55; cursor: wait; }
+    .hint { margin: -8px 22px 14px; color: #98a2b3; text-align: center; font-size: 11px; }
+    @media (max-width: 600px) {
+      .layout { padding: 0 10px; }
+      header { min-height: 72px; }
+      .mark { width: 40px; height: 40px; border-radius: 13px; }
+      .subtitle { max-width: 250px; font-size: 11px; }
+      .intro { padding: 23px 18px 17px; }
+      .intro h2 { font-size: clamp(30px, 10vw, 42px); }
+      .intro h2 { white-space: normal; }
+      .intro p { font-size: 13px; }
+      #messages { padding: 18px; }
+      .message { max-width: 92%; }
+      .composer { padding: 13px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <header>
+      <div class="brand">
+        <div class="mark" aria-hidden="true">Y</div>
+        <div>
+          <h1>Drift Forge</h1>
+          <div class="subtitle">Semiconductor analysis, made understandable</div>
+        </div>
+      </div>
+    </header>
+    <main>
+      <section class="intro">
+        <div class="eyebrow">Your analysis, at a glance</div>
+        <h2>Predicting Yield. <span>Improving Quality.</span></h2>
+        <p>Ask about sensor readings, wafer risk, model performance, and drift. Answers are grounded in the analysis results the data cannot establish physical causes.</p>
+        <div class="suggestions">
+          <button type="button">Is the process drifting?</button>
+          <button type="button">How well does the model perform?</button>
+          <button type="button">Which wafers have the highest risk?</button>
+        </div>
+      </section>
+      <div id="messages" role="log" aria-live="polite"></div>
+      <div class="composer-wrap">
+        <form class="composer" id="form">
+          <textarea id="question" aria-label="Your question" placeholder="Ask anything about your yield analysis…" rows="1" maxlength="4000" required></textarea>
+          <button id="send" type="submit">Send <span aria-hidden="true">↗</span></button>
+        </form>
+        <div class="hint">Enter to send · Shift+Enter for a new line · Answers may be incomplete or uncertain</div>
+      </div>
+    </main>
+  </div>
+  <script>
+    const form = document.querySelector("#form");
+    const input = document.querySelector("#question");
+    const send = document.querySelector("#send");
+    const messages = document.querySelector("#messages");
+    const history = [];
+
+    function addMessage(text, kind, note) {
+      const bubble = document.createElement("div");
+      bubble.className = `message ${kind}`;
+      bubble.textContent = text;
+      if (note) {
+        const footnote = document.createElement("div");
+        footnote.className = "note";
+        footnote.textContent = `A note about this answer: ${note}`;
+        bubble.append(footnote);
+      }
+      messages.append(bubble);
+      messages.scrollTop = messages.scrollHeight;
+      return bubble;
+    }
+
+    async function sendQuestion(question) {
+      const text = question.trim();
+      if (!text || send.disabled) return;
+      addMessage(text, "user");
+      history.push({role: "user", content: text});
+      input.value = "";
+      send.disabled = true;
+      const pending = addMessage("Thinking…", "assistant");
+      try {
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({question: text, history: history.slice(0, -1).slice(-12)})
+        });
+        const result = await response.json();
+        pending.remove();
+        if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+        addMessage(result.answer || "No answer was returned.", "assistant", result.uncertainty);
+        history.push({role: "assistant", content: result.answer || ""});
+        if (history.length > 12) history.splice(0, history.length - 12);
+      } catch (error) {
+        pending.remove();
+        addMessage(`Sorry, the request failed: ${error.message}`, "assistant error");
+        history.pop();
+      } finally {
+        send.disabled = false;
+        input.focus();
+      }
+    }
+
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      sendQuestion(input.value);
+    });
+    input.addEventListener("keydown", event => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    document.querySelectorAll(".suggestions button").forEach(button => {
+      button.addEventListener("click", () => sendQuestion(button.textContent));
+    });
+  </script>
+</body>
+</html>
