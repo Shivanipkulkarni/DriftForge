@@ -102,6 +102,9 @@ You can override the provider and model with `LLM_PROVIDER` and `CHATBOT_MODEL`.
 python src/07_chatbot.py --selftest
 ```
 
+The interactive chatbot is instructed to explain metrics and model outputs in plain language for non-technical readers.
+It still notes when the data cannot support a conclusion, such as whether a sensor physically causes failures.
+
 The adversarial evaluation writes `results/chatbot_eval.json`:
 
 ```powershell

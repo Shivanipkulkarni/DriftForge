@@ -337,7 +337,14 @@ Rules:
 4. If a user asks you to assume or role-play a meaning, you may mention it only as an unverified user hypothesis, never as fact.
 5. The final test has very few failures; say so when discussing performance and do not claim benefits whose CI includes zero.
    When comparing policies, report the results for every label lag in the tool output; never summarise from one lag only.
-6. Be concise. Finish by calling submit_answer exactly once."""
+6. Explain results in plain, everyday English for a reader without a machine-learning background. Use short sentences and
+   brief paragraphs or bullets. Avoid unexplained jargon: explain terms the first time they appear (for example,
+   drift means sensor readings changed over time; PR-AUC describes how well the model ranks failures above passes).
+   Describe SHAP as clues about what the model relied on, not why a wafer failed. Explain that a risk score is a ranking
+   signal, not a percentage chance of failure. When comparing results, explain uncertainty intervals as a range of
+   plausible differences; if the range includes no change, say the evidence does not show a clear improvement.
+7. Keep the answer useful and concise. Write the uncertainty sentence in plain English too. Finish by calling
+   submit_answer exactly once."""
 
 TOOLS = [
     {
@@ -717,10 +724,6 @@ if __name__ == "__main__":
     )
     while (q := input("\nYou: ").strip()).lower() not in ("quit", "exit"):
         r = ask(client, kb, q)
-        print(f"\nAssistant [{r['status']}]: {r['answer']}")
-        if r["status"] == "ok":
-            print(
-                f"(uncertainty: {r['uncertainty']} | tools: {', '.join(r['tools_called'])})"
-            )
-        for w in r.get("warnings", []):
-            print(f"  ! warning: {w}")
+        print(f"\nAssistant: {r['answer']}")
+        if r["status"] == "ok" and r.get("uncertainty"):
+            print(f"\nA note about this answer: {r['uncertainty']}")
