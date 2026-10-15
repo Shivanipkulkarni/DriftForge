@@ -20,7 +20,7 @@ The checked-in configuration and reported results make the experiment protocol a
 
 - Python 3.10 or newer recommended
 - A raw SECOM CSV file
-- Dependencies listed in [requirements.txt](requirements.txt)
+- Dependencies listed in [requirements.txt](requirements.txt) (versions match those recorded in `paper/manifest.json`; Step 8 rewrites the manifest from your current environment)
 
 The optional chatbot uses the OpenAI Python client with an OpenAI-compatible provider such as Groq or Gemini. It is not required for the modeling pipeline.
 
@@ -51,6 +51,7 @@ python src/08_paper_assets.py
 python src/09_pso_xgboost.py
 python src/09_pso_xgboost.py --final
 python src/10_paper_protocol_comparison.py
+python src/11_parametric_metrics.py
 ```
 
 Run the scripts in order from the repository root. Steps 2-4 operate on the development period, Step 5 evaluates the frozen final test period, and Steps 6-8 consume the generated results.
@@ -96,16 +97,11 @@ $env:GEMINI_API_KEY = "your-key"
 python src/07_chatbot.py --provider gemini
 ```
 
-The chatbot opens in your default browser and serves its UI locally at `127.0.0.1:8765`. Keep the Python process running while chatting; press `Ctrl+C` in the terminal to stop it. Use `--port` to choose a different local port, or add `--terminal` to use the original terminal interface.
-
 You can override the provider and model with `LLM_PROVIDER` and `CHATBOT_MODEL`. The self-test does not call an API:
 
 ```powershell
 python src/07_chatbot.py --selftest
 ```
-
-The interactive chatbot is instructed to explain metrics and model outputs in plain language for non-technical readers.
-It still notes when the data cannot support a conclusion, such as whether a sensor physically causes failures.
 
 The adversarial evaluation writes `results/chatbot_eval.json`:
 
@@ -129,6 +125,8 @@ python src/07_chatbot.py --eval --provider groq
 `10_paper_protocol_comparison.py` evaluates the same configurations with a shuffled, stratified 80/20 split, the way many SECOM papers do. It is **not** the project's primary protocol and is not leakage-safe with respect to time. It exists to show how much a random split flatters the same models, and it writes `results/protocol_gap.csv`.
 
 **Reference run (one environment, 16 particles x 12 iterations, 208 evaluations per method).** Search-fold PR-AUC rose from 0.128 (default) to 0.314 (PSO) and 0.274 (random search). On held-out fold 3, PSO matched default XGBoost (PR-AUC 0.074 vs 0.074). On the final test, PSO scored PR-AUC 0.055 vs 0.068 for default (paired 95% CI of the difference: -0.028 to +0.003). The improvement on the search folds did not carry forward in time, so on this data PSO tuning mostly fits the folds it was tuned on. Final-test numbers depend on library versions; rerun Steps 9-10 in your own environment before quoting them.
+
+`11_parametric_metrics.py` computes MAE, MSE, RMSE and R² (the metrics reported by Xu et al., 2022), plus efficiency metrics and drift before/after figures. SECOM has only a binary pass/fail label, so errors are computed two ways: row level (predicted failure probability vs the 0/1 label) and lot level, where consecutive wafers are grouped into lots of 25 (the paper's lot size) with yield = 1 - failure fraction. Probabilities are first corrected for the `scale_pos_weight` class weighting, and a constant "predict the base rate" model is included as the baseline. The paper's numbers are on a different dataset and a continuous yield target, so they are shown for reference and are not directly comparable; the script also prints the noise floor, the smallest lot-level RMSE any model could reach on binary data. Figures: `fig10` (feature distributions before vs after drift), `fig11` (when drift appears), `fig12` (lot-level yield, actual vs predicted), `fig13` (error before vs after adapting, against drift level).
 
 ## Main outputs
 

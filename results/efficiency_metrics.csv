@@ -1,0 +1,4 @@
+model,pr_auc,pr_lift,roc_auc,recall_at_10pct_alert,precision_at_10pct_alert,failures_caught_per_100_flagged,random_failures_per_100,brier_skill_vs_baseline,n_trees,train_seconds,predict_ms_per_1000_wafers,search_evaluations
+default,0.0751,1.3864,0.6267,0.1176,0.0625,6.25,5.414,-0.0425,300,1.8872,55.6061,0
+random,0.068,1.2553,0.5985,0.1176,0.0625,6.25,5.414,-0.035,392,2.9795,32.0624,132
+pso,0.0707,1.3053,0.5936,0.1176,0.0625,6.25,5.414,-0.0419,376,2.7228,49.8876,132

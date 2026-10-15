@@ -1,0 +1,11 @@
+policy,block,n,yield_error,row_mse,row_mae
+static,3,157,0.0315,0.0431,0.0548
+static,4,157,0.0159,0.0178,0.041
+static,5,156,0.0209,0.0574,0.0881
+static,6,156,0.0178,0.0172,0.043
+static,7,156,0.0342,0.0594,0.0804
+periodic_every_1_expanding,3,157,0.0315,0.0431,0.0548
+periodic_every_1_expanding,4,157,0.0038,0.013,0.0216
+periodic_every_1_expanding,5,156,0.0551,0.0563,0.0589
+periodic_every_1_expanding,6,156,0.0088,0.0134,0.0168
+periodic_every_1_expanding,7,156,0.0558,0.0575,0.0594
