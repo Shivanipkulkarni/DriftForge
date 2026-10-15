@@ -1,3 +1,6 @@
+# src/08_paper_assets.py
+# Turns results/*.csv into paper-ready figures (PNG, 300 dpi) and one Excel workbook of tables.
+# Needs: pip install openpyxl matplotlib   | Output goes to paper/
 import importlib.metadata as md
 import json, os, platform, re, subprocess
 import numpy as np
@@ -283,6 +286,19 @@ if gap is not None:
     axes[0].legend(frameon=False, loc="upper right")
     fig.suptitle("Same models, two evaluation protocols")
     save(fig, "fig9_protocol_gap")
+
+# ------------------------------------------------ Tables 12-17: parametric, efficiency and drift tables (Step 11)
+for sheet, f in (
+    ("T12_paper_comparison", "results/paper_comparison.csv"),
+    ("T13_lot_level", "results/parametric_lot_level.csv"),
+    ("T14_row_level", "results/parametric_row_level.csv"),
+    ("T15_efficiency", "results/efficiency_metrics.csv"),
+    ("T16_adapt_by_block", "results/adaptation_error_by_block.csv"),
+    ("T17_drift_by_block", "results/drift_by_block.csv"),
+):
+    t = read(f)
+    if t is not None:
+        tables[sheet] = t.round(4)
 
 # ------------------------------------------------ write workbook + reproducibility manifest
 with pd.ExcelWriter(f"{OUT}/tables.xlsx", engine="openpyxl") as xl:
