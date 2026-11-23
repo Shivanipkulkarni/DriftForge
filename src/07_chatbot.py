@@ -8,13 +8,17 @@
 #   Groq  : put GROQ_API_KEY in .env    (https://console.groq.com)        -> python src/07_chatbot.py --provider groq
 #   Gemini: put GEMINI_API_KEY in .env  (https://aistudio.google.com)     -> python src/07_chatbot.py --provider gemini
 # Override the model with CHATBOT_MODEL if a default has been retired.
-import argparse, json, os, re, time, webbrowser
+import argparse, io, json, os, re, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 from scipy.stats import ks_2samp, false_discovery_control
-from lib import KS_MIN, Q_MAX, load_all
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import f1_score
+from xgboost import DMatrix
+from lib import KS_MIN, Q_MAX, Deployer, load_all, score_features, select, xgb_model
 from dotenv import load_dotenv
 
 load_dotenv()  # reads GROQ_API_KEY / GEMINI_API_KEY from a .env file in the project root
@@ -34,13 +38,22 @@ PROVIDERS = {  # name: (base_url, api-key env var, default model) -- check the p
 PROVIDER = os.environ.get("LLM_PROVIDER", "groq")
 MODEL = os.environ.get("CHATBOT_MODEL", "")
 FINAL_BLOCKS = 4
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+MAX_UPLOAD_ROWS = 10000
 
 
 # ============================================================ knowledge base (read-only, built from Steps 1-6)
 class KB:
     def __init__(self):
         df, cfg, sel, feats = load_all()
-        self.df, self.feats, self.n_dev, self.n = df, feats, cfg["n_dev"], cfg["n_rows"]
+        self.df, self.feats, self.n_dev, self.n, self.sel = (
+            df,
+            feats,
+            cfg["n_dev"],
+            cfg["n_rows"],
+            sel,
+        )
+        self.upload_analysis = None
         self.X = df[feats]
         self.reg = pd.read_csv(
             "data/metadata/feature_registry.csv", dtype={"feature_id": str}
@@ -236,6 +249,11 @@ class KB:
             for _, r in g.iterrows()
         ]
 
+    def uploaded_dataset_analysis(self):
+        if self.upload_analysis is None:
+            return {"error": "No manufacturing dataset has been uploaded in this chat yet."}
+        return self.upload_analysis
+
     def call(self, name, args):
         fn = {
             "get_feature_info": self.get_feature_info,
@@ -244,6 +262,7 @@ class KB:
             "drift_status": self.drift_status,
             "model_performance": self.model_performance,
             "global_importance": self.global_importance,
+            "uploaded_dataset_analysis": self.uploaded_dataset_analysis,
         }.get(name)
         if fn is None:
             return {"error": f"unknown tool {name}"}
@@ -256,6 +275,387 @@ class KB:
                 out, default=lambda o: o.item() if hasattr(o, "item") else str(o)
             )
         )
+
+
+def _prior_correct(scores, weight):
+    return scores / (scores + weight * (1.0 - scores))
+
+
+def _sensor_header(header):
+    return re.sub(r"^sensor\s*", "", str(header).strip(), flags=re.I).strip().casefold()
+
+
+class InvalidUploadError(ValueError):
+    pass
+
+
+def parse_upload_csv(content, required_features):
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise InvalidUploadError("CSV must be encoded as UTF-8.") from exc
+    try:
+        frame = pd.read_csv(io.StringIO(text))
+    except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+        raise InvalidUploadError(f"Could not read the CSV: {exc}") from exc
+    if frame.empty:
+        raise InvalidUploadError("The CSV must contain at least one wafer row.")
+    if len(frame) > MAX_UPLOAD_ROWS:
+        raise InvalidUploadError(
+            f"The CSV may contain at most {MAX_UPLOAD_ROWS} wafer rows."
+        )
+
+    columns = {}
+    for column in frame.columns:
+        key = _sensor_header(column)
+        if key in columns:
+            raise InvalidUploadError(
+                f"Duplicate sensor column after normalizing names: {key}"
+            )
+        columns[key] = column
+    missing = [feature for feature in required_features if feature not in columns]
+    if missing:
+        labels = ", ".join(f"Sensor {feature}" for feature in missing)
+        raise InvalidUploadError(f"Missing required model sensor columns: {labels}")
+
+    values = frame[[columns[feature] for feature in required_features]].copy()
+    values.columns = required_features
+    for feature in required_features:
+        original = values[feature]
+        numeric = pd.to_numeric(original, errors="coerce")
+        invalid = original.notna() & numeric.isna()
+        if invalid.any():
+            rows = (np.flatnonzero(invalid.to_numpy())[:5] + 2).tolist()
+            raise InvalidUploadError(
+                f"Sensor {feature} contains non-numeric values at CSV row(s): "
+                + ", ".join(map(str, rows))
+            )
+        if np.isinf(numeric.dropna().to_numpy(dtype=float)).any():
+            raise InvalidUploadError(f"Sensor {feature} contains an infinite value.")
+        values[feature] = numeric.astype(float)
+    return values, len(frame.columns) - len(required_features)
+
+
+class UploadPredictor:
+    def __init__(self, kb):
+        self.kb = kb
+        self.model = None
+        self.threshold = None
+        self.weight = None
+        self.model_lock = threading.Lock()
+
+    @staticmethod
+    def _predict(bundle, rows):
+        transformed = bundle["imp"].transform(rows[bundle["cols"]])
+        return np.mean(
+            [model.predict_proba(transformed)[:, 1] for model in bundle["models"]],
+            axis=0,
+        )
+
+    @staticmethod
+    def _contributions(bundle, rows):
+        transformed = bundle["imp"].transform(rows[bundle["cols"]])
+        return np.mean(
+            [
+                model.get_booster().predict(
+                    DMatrix(transformed), pred_contribs=True
+                )[:, :-1]
+                for model in bundle["models"]
+            ],
+            axis=0,
+        )
+
+    def _load_model(self):
+        with self.model_lock:
+            if self.model is None:
+                self._fit_model()
+
+    def _fit_model(self):
+        cut = int(self.kb.n_dev * 0.6)
+        X_train, y_train = self.kb.X.iloc[:cut], self.kb.df["target"].iloc[:cut]
+        selected = select(
+            self.kb.sel["strategy"],
+            score_features(X_train, y_train),
+            None if self.kb.sel["k"] == 0 else self.kb.sel["k"],
+        )
+        imputer = SimpleImputer(strategy="median").fit(X_train[selected])
+        train_values = imputer.transform(X_train[selected])
+        validation_models = [
+            xgb_model(y_train, seed).fit(train_values, y_train)
+            for seed in range(5)
+        ]
+        validation_bundle = {
+            "cols": selected,
+            "imp": imputer,
+            "models": validation_models,
+        }
+        validation_scores = self._predict(
+            validation_bundle, self.kb.X.iloc[cut : self.kb.n_dev]
+        )
+        validation_weight = (len(y_train) - int(y_train.sum())) / max(
+            int(y_train.sum()), 1
+        )
+        validation_scores = _prior_correct(validation_scores, validation_weight)
+        y_validation = self.kb.df["target"].iloc[cut : self.kb.n_dev].to_numpy()
+        if y_validation.sum() == 0:
+            prevalence = max(float(y_train.mean()), 0.01)
+            threshold = float(np.quantile(validation_scores, 1 - prevalence))
+        else:
+            candidates = np.unique(validation_scores)
+            threshold = float(
+                candidates[
+                    np.argmax(
+                        [
+                            f1_score(
+                                y_validation,
+                                validation_scores >= candidate,
+                                zero_division=0,
+                            )
+                            for candidate in candidates
+                        ]
+                    )
+                ]
+            )
+
+        deployer = Deployer(self.kb.X, self.kb.df["target"], self.kb.sel)
+        self.model = deployer.train(0, self.kb.n_dev)
+        trained_labels = self.kb.df["target"].iloc[: self.kb.n_dev]
+        positives = int(trained_labels.sum())
+        self.weight = (self.kb.n_dev - positives) / max(positives, 1)
+        self.threshold = threshold
+
+    @staticmethod
+    def _row_explanation(bundle, row):
+        contributions = UploadPredictor._contributions(
+            bundle, row[bundle["cols"]].to_frame().T
+        )[0]
+        order = np.argsort(np.abs(contributions))[::-1][:3]
+        return [
+            {
+                "sensor": f"Sensor {bundle['cols'][index]}",
+                "value": (
+                    None
+                    if pd.isna(row[bundle["cols"][index]])
+                    else round(float(row[bundle["cols"][index]]), 4)
+                ),
+                "imputed": bool(pd.isna(row[bundle["cols"][index]])),
+                "direction": "raises the model's failure-risk score"
+                if contributions[index] > 0
+                else "lowers the model's failure-risk score",
+            }
+            for index in order
+        ]
+
+    def predict(self, content):
+        self._load_model()
+        rows, ignored_columns = parse_upload_csv(content, self.model["cols"])
+        raw_scores = self._predict(self.model, rows)
+        risks = _prior_correct(raw_scores, self.weight)
+        predicted_fail = risks >= self.threshold
+        fails = int(predicted_fail.sum())
+        count = len(rows)
+        expected_fails = float(risks.sum())
+        representative_rows = []
+        order = np.argsort(risks)
+        pass_rows = order[~predicted_fail[order]][:2]
+        fail_rows = order[predicted_fail[order]][::-1][:3]
+        if not len(pass_rows):
+            pass_rows = order[:1]
+        if not len(fail_rows):
+            fail_rows = order[::-1][:1]
+        for label, indices in (
+            (
+                "lowest-risk pass" if not predicted_fail.all() else "lowest-risk fail",
+                pass_rows,
+            ),
+            (
+                "highest-risk fail" if fails else "highest-risk pass",
+                fail_rows,
+            ),
+        ):
+            for index in indices:
+                representative_rows.append(
+                    {
+                        "row": int(index + 1),
+                        "predicted_label": "Fail" if predicted_fail[index] else "Pass",
+                        "risk_pct": round(float(risks[index] * 100), 1),
+                        "example_type": label,
+                        "signals": self._row_explanation(
+                            self.model, rows.iloc[index]
+                        ),
+                    }
+                )
+        high_risk_rows = np.flatnonzero(predicted_fail)
+        if not len(high_risk_rows):
+            high_risk_rows = order[::-1][: min(100, count)]
+        else:
+            high_risk_rows = high_risk_rows[
+                np.argsort(risks[high_risk_rows])[::-1][:100]
+            ]
+        group_contributions = self._contributions(
+            self.model, rows.iloc[high_risk_rows]
+        )
+        comparisons, p_values = [], []
+        training = self.kb.X.iloc[: self.kb.n_dev]
+        for index, feature in enumerate(self.model["cols"]):
+            train_values = training[feature].dropna().to_numpy()
+            upload_values = rows[feature].dropna().to_numpy()
+            if len(train_values) >= 20 and len(upload_values) >= 20:
+                test = ks_2samp(train_values, upload_values)
+                ks, p_value = float(test.statistic), float(test.pvalue)
+            else:
+                ks, p_value = 0.0, 1.0
+            p_values.append(p_value)
+            contribution = group_contributions[:, index]
+            comparisons.append(
+                {
+                    "feature_id": str(feature),
+                    "drift_ks": ks,
+                    "drifting": False,
+                    "training_median": round(float(np.median(train_values)), 4),
+                    "uploaded_median": (
+                        None
+                        if not len(upload_values)
+                        else round(float(np.median(upload_values)), 4)
+                    ),
+                    "uploaded_missing_pct": round(
+                        100 * (1 - len(upload_values) / count), 1
+                    ),
+                    "mean_failure_score_contribution": round(
+                        float(np.mean(contribution)), 4
+                    ),
+                    "mean_absolute_contribution": round(
+                        float(np.mean(np.abs(contribution))), 4
+                    ),
+                }
+            )
+        q_values = false_discovery_control(np.asarray(p_values), method="bh")
+        for comparison, q_value in zip(comparisons, q_values):
+            comparison["drift_q"] = round(float(q_value), 4)
+            comparison["drifting"] = (
+                comparison["drift_ks"] > KS_MIN and q_value < Q_MAX
+            )
+            comparison["drift_ks"] = round(comparison["drift_ks"], 3)
+        risk_raising = [
+            item
+            for item in comparisons
+            if item["mean_failure_score_contribution"] > 0
+        ]
+        shifted_risk_raising = [
+            item for item in risk_raising if item["drifting"]
+        ]
+        recommended_features = sorted(
+            shifted_risk_raising or risk_raising,
+            key=lambda item: (
+                item["drift_ks"],
+                item["mean_failure_score_contribution"],
+            ),
+            reverse=True,
+        )[:5]
+        upload_analysis = {
+            "row_count": count,
+            "predicted_pass_count": count - fails,
+            "predicted_fail_count": fails,
+            "estimated_fail_count": round(expected_fails, 2),
+            "decision_threshold": round(float(self.threshold), 4),
+            "drift_definition": (
+                f"KS > {KS_MIN:.2f} and FDR-adjusted q < {Q_MAX:.2f} "
+                "compared with the training/development rows."
+            ),
+            "high_risk_group": (
+                "Predicted-fail rows, or the highest-risk rows if none cross "
+                "the decision threshold."
+            ),
+            "sensor_comparisons": comparisons,
+            "sensors_to_investigate_first": recommended_features,
+            "priority_note": (
+                "These sensors both drift and raise model risk."
+                if shifted_risk_raising
+                else (
+                    "No sensor both drifted and raised risk; these sensors raise "
+                    "model risk but did not meet the drift test."
+                    if risk_raising
+                    else "No sensor showed a positive average model contribution "
+                    "in the high-risk group."
+                )
+            ),
+            "representative_examples": representative_rows,
+            "guidance": (
+                "Prioritize sensors that both drift from the training data and "
+                "raise the model's failure score. Sensor IDs have no known mapping "
+                "to physical controls, so inspect their trend and map them to "
+                "process logs before considering any controlled setting change."
+            ),
+        }
+        self.kb.upload_analysis = upload_analysis
+        expected_passes = count - expected_fails
+        answer = (
+            f"Analyzed {count:,} wafer rows. By the model's validation-selected "
+            f"decision threshold, {count - fails:,} are predicted Pass "
+            f"({100 * (count - fails) / count:.1f}%) and {fails:,} Fail "
+            f"({100 * fails / count:.1f}%).\n\n"
+            f"Estimated yield from average prior-adjusted risk scores "
+            f"(not the thresholded label count): "
+            f"{100 * expected_passes / count:.1f}% pass and "
+            f"{100 * expected_fails / count:.1f}% fail "
+            f"(about {expected_fails:.1f} expected failures out of {count:,}).\n\n"
+            f"The pass/fail threshold is {self.threshold:.2%}, selected using "
+            "a held-out portion of the training data."
+        )
+        priority_sensors = ", ".join(
+            f"Sensor {item['feature_id']}" for item in recommended_features
+        )
+        if priority_sensors:
+            answer += (
+                f"\n\nCompared with the training data, investigate these "
+                f"risk-raising sensor signals first: {priority_sensors}. "
+                "Their physical controls are not identified by the model."
+            )
+        elif risk_raising:
+            answer += (
+                "\n\nNo selected sensor met the project drift test while also "
+                "raising risk; review the per-row signals below."
+            )
+        else:
+            answer += (
+                "\n\nNo selected sensor had a positive average risk contribution "
+                "in the high-risk rows."
+            )
+        answer += (
+            "\n\nRepresentative row explanations (sensor signals are not proven "
+            "physical causes): "
+        )
+        explanation_text = []
+        for example in representative_rows:
+            signals = "; ".join(
+                f"{signal['sensor']} {signal['direction']}"
+                for signal in example["signals"]
+            )
+            explanation_text.append(
+                f"row {example['row']} ({example['predicted_label']}, "
+                f"{example['risk_pct']:.1f}% estimated risk): {signals}"
+            )
+        answer += " | ".join(explanation_text)
+        if ignored_columns:
+            answer += (
+                f"\n\nIgnored {ignored_columns} non-model column(s), including "
+                "any time or label columns; uploaded labels are not used."
+            )
+        return {
+            "status": "ok",
+            "answer": answer,
+            "uncertainty": (
+                "These are model estimates, not measured outcomes or guaranteed "
+                "calibrated probabilities. New-process performance may differ; "
+                "sensor contributions describe model behavior, not physical causes."
+            ),
+            "row_count": count,
+            "predicted_pass_count": count - fails,
+            "predicted_fail_count": fails,
+            "estimated_fail_count": round(expected_fails, 2),
+            "decision_threshold": round(float(self.threshold), 4),
+            "examples": representative_rows,
+        }
 
 
 # ============================================================ guard: never invent physical meanings
@@ -346,7 +746,12 @@ Rules:
    Describe SHAP as clues about what the model relied on, not why a wafer failed. Explain that a risk score is a ranking
    signal, not a percentage chance of failure. When comparing results, explain uncertainty intervals as a range of
    plausible differences; if the range includes no change, say the evidence does not show a clear improvement.
-7. Keep the answer useful and concise. Write the uncertainty sentence in plain English too. Finish by calling
+7. When an uploaded dataset is available, ALWAYS call uploaded_dataset_analysis before answering a follow-up.
+   Ground recommendations in its sensor comparisons and risk explanations. Prioritize sensors that both drift from
+   training data and raise the model's failure score. Sensor IDs are anonymous: never invent a physical parameter,
+   machine setting or setpoint. Recommend checking the mapped process logs and validating any change with a controlled
+   experiment; do not claim a specific setting change will improve yield.
+8. Keep the answer useful and concise. Write the uncertainty sentence in plain English too. Finish by calling
    submit_answer exactly once."""
 
 TOOLS = [
@@ -395,6 +800,15 @@ TOOLS = [
         },
     },
     {
+        "name": "uploaded_dataset_analysis",
+        "description": (
+            "Analyze the latest uploaded manufacturing dataset: pass/fail estimates, "
+            "sensor shifts versus training data, and model risk contributions. "
+            "Always call this before answering a follow-up after an upload."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "submit_answer",
         "description": "Submit the final answer. Call exactly once, last.",
         "input_schema": {
@@ -426,6 +840,106 @@ TOOLS = [
     },
 ]
 SAFE = "I could not produce an answer that passes the grounding checks, so I am not answering. Please rephrase or ask about a specific sensor, wafer, drift or performance."
+
+IMPROVEMENT_PHRASES = (
+    "improve",
+    "which parameter",
+    "parameter",
+    "what parameter",
+    "which setting",
+    "setting",
+    "setpoint",
+    "which sensor",
+    "what should i change",
+    "what should i adjust",
+    "what to change",
+    "what to adjust",
+    "adjust the",
+    "change the",
+    "tune the",
+    "optimize",
+    "optimise",
+    "increase yield",
+    "reduce failures",
+)
+
+
+def _is_improvement_question(question):
+    normalized = question.casefold()
+    return any(phrase in normalized for phrase in IMPROVEMENT_PHRASES)
+
+
+def _uploaded_improvement_answer(kb):
+    analysis = kb.call("uploaded_dataset_analysis", {})
+    if "error" in analysis:
+        return {
+            "status": "ok",
+            "answer": (
+                "Upload a manufacturing CSV first. Then I can compare its sensor "
+                "readings with the training data and show which model signals are "
+                "most worth investigating."
+            ),
+            "uncertainty": "",
+            "tools_called": [],
+        }
+
+    count = analysis["row_count"]
+    fails = analysis["predicted_fail_count"]
+    passes = analysis["predicted_pass_count"]
+    recommendations = analysis["sensors_to_investigate_first"]
+    answer = (
+        f"For the latest upload ({count:,} rows), the model classifies "
+        f"{passes:,} as Pass and {fails:,} as Fail. "
+    )
+    if recommendations:
+        if any(item["drifting"] for item in recommendations):
+            answer += (
+                "I would investigate these sensor signals first because they "
+                "both shifted from training and raised the model's failure score: "
+            )
+        else:
+            answer += (
+                "These sensor signals raised the model's failure score, although "
+                "they did not meet the dataset-drift test: "
+            )
+        details = []
+        for item in recommendations[:3]:
+            uploaded_median = item["uploaded_median"]
+            median_change = (
+                "uploaded median unavailable"
+                if uploaded_median is None
+                else (
+                    f"training median {item['training_median']}, "
+                    f"uploaded median {uploaded_median}"
+                )
+            )
+            details.append(
+                f"Sensor {item['feature_id']} ({median_change}; "
+                f"drift KS {item['drift_ks']}; average model-score contribution "
+                f"{item['mean_failure_score_contribution']:+.4f})"
+            )
+        answer += "; ".join(details) + "."
+    else:
+        answer += (
+            "No selected sensor had a positive average risk contribution in the "
+            "uploaded high-risk rows, so this analysis does not support a "
+            "specific sensor to adjust."
+        )
+    answer += (
+        " These sensor IDs are anonymous, so I cannot identify a physical "
+        "parameter or prescribe a setpoint. Map the sensors to your recipe and "
+        "process logs, confirm the trend, and validate any proposed change with "
+        "a controlled trial."
+    )
+    return {
+        "status": "ok",
+        "answer": answer,
+        "uncertainty": (
+            "This is a model-based investigation priority, not proof of cause or "
+            "a guarantee that changing a process setting will improve yield."
+        ),
+        "tools_called": ["uploaded_dataset_analysis"],
+    }
 
 
 OAI_TOOLS = [
@@ -499,6 +1013,8 @@ def _echo_call(c):
 
 
 def ask(client, kb, question, max_steps=8, max_rejects=2, history=None):
+    if _is_improvement_question(question):
+        return _uploaded_improvement_answer(kb)
     msgs = [{"role": "system", "content": SYSTEM}]
     msgs.extend(history or [])
     msgs.append({"role": "user", "content": question})
@@ -561,6 +1077,14 @@ def ask(client, kb, question, max_steps=8, max_rejects=2, history=None):
         text = str(a.get("answer", ""))
         ids = set(re.findall(r"[Ss]ensor\s+(\d+)", text))
         hard, soft = check_answer(text, kb.reg, all_numbers, missing)
+        if (
+            kb.upload_analysis is not None
+            and "uploaded_dataset_analysis" not in called
+        ):
+            hard.append(
+                "a manufacturing dataset is uploaded; call uploaded_dataset_analysis "
+                "and ground this answer in its results"
+            )
         if not set(map(str, a.get("features_mentioned", []))) >= (ids - missing):
             hard.append(
                 "features_mentioned does not list every sensor named in the answer"
@@ -650,7 +1174,111 @@ def selftest(kb):
     for text, should_flag in cases:
         hard, _ = check_answer(text, kb.reg)
         assert bool(hard) == should_flag, (text, hard)
-    print(f"selftest passed: tools OK, guard OK ({len(cases)} cases)")
+    sample_features = list(map(str, kb.feats[:2]))
+    sample = pd.DataFrame(
+        {
+            f"Sensor {sample_features[0]}": [1.0, 2.0],
+            sample_features[1]: [3.0, 4.0],
+            "Pass/Fail": [-1, 1],
+        }
+    )
+    csv = io.StringIO()
+    sample.to_csv(csv, index=False)
+    parsed, ignored = parse_upload_csv(
+        csv.getvalue().encode("utf-8"), sample_features
+    )
+    assert parsed.shape == (2, 2) and ignored == 1
+    try:
+        parse_upload_csv(b"Sensor 99999\n1\n", ["missing"])
+    except InvalidUploadError:
+        pass
+    else:
+        raise AssertionError("upload parser accepted a missing model feature")
+    feature_id = str(kb.feats[0])
+    kb.upload_analysis = {
+        "row_count": 1,
+        "predicted_pass_count": 0,
+        "predicted_fail_count": 1,
+        "sensors_to_investigate_first": [
+            {
+                "feature_id": feature_id,
+                "drifting": True,
+                "training_median": 1.0,
+                "uploaded_median": 2.0,
+                "drift_ks": 0.5,
+                "mean_failure_score_contribution": 0.25,
+            }
+        ],
+    }
+    recommendation = ask(object(), kb, "How can I improve this dataset?")
+    assert recommendation["status"] == "ok"
+    assert f"Sensor {feature_id}" in recommendation["answer"]
+    assert "cannot identify a physical parameter" in recommendation["answer"]
+    calls = iter(
+        [
+            SimpleNamespace(
+                id="generic",
+                function=SimpleNamespace(
+                    name="submit_answer",
+                    arguments=json.dumps(
+                        {
+                            "answer": "I can help with that.",
+                            "features_mentioned": [],
+                            "data_sources_used": [],
+                            "uncertainty": "The dataset will be checked.",
+                        }
+                    ),
+                ),
+            ),
+            SimpleNamespace(
+                id="analysis",
+                function=SimpleNamespace(
+                    name="uploaded_dataset_analysis", arguments="{}"
+                ),
+            ),
+            SimpleNamespace(
+                id="grounded",
+                function=SimpleNamespace(
+                    name="submit_answer",
+                    arguments=json.dumps(
+                        {
+                            "answer": f"Based on the uploaded dataset, Sensor {feature_id} raises the model's failure-risk score.",
+                            "features_mentioned": [feature_id],
+                            "data_sources_used": ["uploaded_dataset_analysis"],
+                            "uncertainty": "This signal is not a proven physical cause.",
+                        }
+                    ),
+                ),
+            ),
+        ]
+    )
+    messages = iter(
+        [
+            [next(calls)],
+            [next(calls)],
+            [next(calls)],
+        ]
+    )
+    original_chat = globals()["_chat"]
+    try:
+        globals()["_chat"] = lambda *_args: SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(tool_calls=next(messages), content=None)
+                )
+            ]
+        )
+        result = ask(object(), kb, "Summarize the uploaded data.")
+        assert result["status"] == "ok", result
+        assert "uploaded_dataset_analysis" in result["tools_called"]
+        assert result["violations_before_accept"]
+    finally:
+        globals()["_chat"] = original_chat
+        kb.upload_analysis = None
+    print(
+        f"selftest passed: tools, guard ({len(cases)} cases), CSV validation, "
+        "and uploaded-data follow-up grounding OK"
+    )
 
 
 EVAL_QS = [
@@ -727,14 +1355,39 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.wfile.write(page)
 
     def do_POST(self):
-        if self.path != "/api/chat":
-            self._send_json(404, {"error": "Not found"})
-            return
-
         expected_origin = f"http://127.0.0.1:{self.server.server_port}"
         origin = self.headers.get("Origin")
         if origin and origin != expected_origin:
             self._send_json(403, {"error": "Requests must come from the local chatbot page"})
+            return
+        if self.path == "/api/predict":
+            if self.headers.get_content_type() != "text/csv":
+                self._send_json(415, {"error": "Expected a CSV file"})
+                return
+            try:
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError as exc:
+                    raise InvalidUploadError("Invalid Content-Length header.") from exc
+                if length <= 0 or length > MAX_UPLOAD_BYTES:
+                    raise InvalidUploadError(
+                        f"CSV must be between 1 byte and {MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+                    )
+                content = self.rfile.read(length)
+                if len(content) != length:
+                    raise InvalidUploadError("The uploaded CSV was incomplete.")
+                result = self.server.upload_predictor.predict(content)
+            except InvalidUploadError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            except Exception as exc:
+                print(f"Upload prediction failed: {type(exc).__name__}: {exc}")
+                self._send_json(500, {"error": "Prediction failed. Check the server log."})
+                return
+            self._send_json(200, result)
+            return
+        if self.path != "/api/chat":
+            self._send_json(404, {"error": "Not found"})
             return
         if self.headers.get_content_type() != "application/json":
             self._send_json(415, {"error": "Expected application/json"})
@@ -781,6 +1434,7 @@ def run_web(client, kb, port):
     server = ThreadingHTTPServer(("127.0.0.1", port), ChatHandler)
     server.chat_client = client
     server.knowledge_base = kb
+    server.upload_predictor = UploadPredictor(kb)
     url = f"http://127.0.0.1:{server.server_port}/"
     print(f"Starting the chatbot in your browser: {url}")
     if not webbrowser.open(url, new=1):

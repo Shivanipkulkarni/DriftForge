@@ -40,7 +40,11 @@
     textarea { flex: 1; min-height: 48px; max-height: 140px; resize: vertical; padding: 13px 14px; border: 1px solid #d0d5dd; border-radius: 12px; outline: none; font: inherit; font-size: 14px; }
     textarea:focus { border-color: #528bff; box-shadow: 0 0 0 3px #d1e0ff; }
     #send { align-self: flex-end; min-width: 82px; height: 46px; border: 0; border-radius: 12px; color: white; background: #174ea6; font: inherit; font-weight: 650; cursor: pointer; }
-    #send:disabled { opacity: .55; cursor: wait; }
+    #send:disabled, #predict:disabled { opacity: .55; cursor: wait; }
+    .upload-row { display: flex; align-items: center; gap: 12px; padding: 12px 20px 0; color: #66748d; font-size: 12px; }
+    .upload-row label { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .upload-row input { max-width: min(42vw, 360px); font: inherit; }
+    #predict { margin-left: auto; min-height: 38px; padding: 8px 13px; border: 1px solid #cbd8ee; border-radius: 10px; color: #174ea6; background: white; font: inherit; font-weight: 650; cursor: pointer; }
     .hint { margin: -8px 22px 14px; color: #98a2b3; text-align: center; font-size: 11px; }
     @media (max-width: 600px) {
       .layout { padding: 0 10px; }
@@ -54,6 +58,9 @@
       #messages { padding: 18px; }
       .message { max-width: 92%; }
       .composer { padding: 13px; }
+      .upload-row { flex-wrap: wrap; padding: 12px 13px 0; }
+      .upload-row input { max-width: 55vw; }
+      #predict { margin-left: 0; }
     }
   </style>
 </head>
@@ -72,7 +79,7 @@
       <section class="intro">
         <div class="eyebrow">Your analysis, at a glance</div>
         <h2>Predicting Yield. <span>Improving Quality.</span></h2>
-        <p>Ask about sensor readings, wafer risk, model performance, and drift. Answers are grounded in the analysis results the data cannot establish physical causes.</p>
+        <p>Ask about sensor readings, wafer risk, model performance, and drift, or upload a manufacturing CSV for pass/fail estimates and model-signal explanations. After upload, follow-up questions use its comparison with training data. Model signals are not proof of physical causes.</p>
         <div class="suggestions">
           <button type="button">Is the process drifting?</button>
           <button type="button">How well does the model perform?</button>
@@ -81,6 +88,13 @@
       </section>
       <div id="messages" role="log" aria-live="polite"></div>
       <div class="composer-wrap">
+        <div class="upload-row">
+          <label for="dataset">Upload manufacturing CSV
+            <input id="dataset" type="file" accept=".csv,text/csv" aria-label="Choose a manufacturing dataset CSV">
+          </label>
+          <span>Required model sensors only; labels are ignored.</span>
+          <button id="predict" type="button">Predict pass/fail</button>
+        </div>
         <form class="composer" id="form">
           <textarea id="question" aria-label="Your question" placeholder="Ask anything about your yield analysis…" rows="1" maxlength="4000" required></textarea>
           <button id="send" type="submit">Send <span aria-hidden="true">↗</span></button>
@@ -93,6 +107,8 @@
     const form = document.querySelector("#form");
     const input = document.querySelector("#question");
     const send = document.querySelector("#send");
+    const dataset = document.querySelector("#dataset");
+    const predict = document.querySelector("#predict");
     const messages = document.querySelector("#messages");
     const history = [];
 
@@ -113,11 +129,12 @@
 
     async function sendQuestion(question) {
       const text = question.trim();
-      if (!text || send.disabled) return;
+      if (!text || send.disabled || predict.disabled) return;
       addMessage(text, "user");
       history.push({role: "user", content: text});
       input.value = "";
       send.disabled = true;
+      predict.disabled = true;
       const pending = addMessage("Thinking…", "assistant");
       try {
         const response = await fetch("/api/chat", {
@@ -137,7 +154,41 @@
         history.pop();
       } finally {
         send.disabled = false;
+        predict.disabled = false;
         input.focus();
+      }
+    }
+
+    async function predictDataset() {
+      const file = dataset.files[0];
+      if (!file || send.disabled || predict.disabled) return;
+      addMessage(`Uploaded dataset: ${file.name}`, "user");
+      send.disabled = true;
+      predict.disabled = true;
+      const pending = addMessage("Validating data and predicting yield…", "assistant");
+      try {
+        const response = await fetch("/api/predict", {
+          method: "POST",
+          headers: {"Content-Type": "text/csv"},
+          body: file
+        });
+        const result = await response.json();
+        pending.remove();
+        if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+        const answer = result.answer || "No prediction was returned.";
+        addMessage(answer, "assistant", result.uncertainty);
+        history.push(
+          {role: "user", content: `Uploaded dataset "${file.name}" for analysis.`},
+          {role: "assistant", content: answer}
+        );
+        if (history.length > 12) history.splice(0, history.length - 12);
+      } catch (error) {
+        pending.remove();
+        addMessage(`Sorry, the prediction failed: ${error.message}`, "assistant error");
+      } finally {
+        dataset.value = "";
+        send.disabled = false;
+        predict.disabled = false;
       }
     }
 
@@ -154,6 +205,7 @@
     document.querySelectorAll(".suggestions button").forEach(button => {
       button.addEventListener("click", () => sendQuestion(button.textContent));
     });
+    predict.addEventListener("click", predictDataset);
   </script>
 </body>
 </html>

@@ -27,6 +27,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     roc_auc_score,
+    r2_score
 )
 from sklearn.model_selection import StratifiedShuffleSplit
 from xgboost import XGBClassifier
@@ -71,6 +72,7 @@ for rep, (tr, te) in enumerate(splitter.split(X, y)):
                 f1=f1_score(y[te], yhat, zero_division=0),
                 roc_auc=roc_auc_score(y[te], p),
                 pr_auc=average_precision_score(y[te], p),
+                r2=r2_score(y[te], p)
             )
         )
     print(f"repeat {rep + 1}/{REPEATS} done")

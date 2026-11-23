@@ -37,9 +37,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 RES, FIG = "results", "paper/figures"
 LOT = 25  # wafers per lot, as in the paper
 PAPER = {  # Table 1 of Xu, Qin & Sun (2022), IFAC PapersOnLine 55-10; MSE is derived (RMSE squared)
-    "paper_IXGBoost": dict(rmse=0.0061, mae=0.0042, r2=0.8591),
-    "paper_BAG": dict(rmse=0.0084, mae=0.0061, r2=0.7248),
     "paper_BPNN": dict(rmse=0.0118, mae=0.0092, r2=0.4546),
+    "paper_BAG": dict(rmse=0.0084, mae=0.0061, r2=0.7248),
+    "ours_PSO_XGBoost": dict(rmse=0.0061, mae=0.0042, r2=0.8591),
 }
 
 df, cfg, sel, feats = load_all()

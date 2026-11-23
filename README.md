@@ -103,6 +103,8 @@ You can override the provider and model with `LLM_PROVIDER` and `CHATBOT_MODEL`.
 python src/07_chatbot.py --selftest
 ```
 
+In the browser chatbot, choose **Upload manufacturing CSV** and select **Predict pass/fail** to score a new dataset. The CSV must contain the selected model's sensor columns (shown as numeric IDs or `Sensor <id>`); extra columns such as time or labels are ignored. Uploads are limited to 5 MB and 10,000 rows. Uploaded labels, if present, are never used. The result reports threshold-based pass/fail counts, estimated yield from prior-adjusted model scores, and sensor signals for representative low- and high-risk rows. Follow-up questions use the latest successful upload and compare its sensor distributions with the training data. The chatbot can identify sensor signals to investigate, but sensor IDs are anonymous and cannot identify which physical machine setting to change. These are estimates based on the SECOM training data, not verified outcomes for a new manufacturing process; sensor signals are not physical causes.
+
 The adversarial evaluation writes `results/chatbot_eval.json`:
 
 ```powershell
