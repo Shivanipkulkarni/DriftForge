@@ -22,7 +22,8 @@
     h1 { margin: 0; color: #17243b; font-size: clamp(17px, 2vw, 20px); font-weight: 760; letter-spacing: -.035em; }
     .subtitle { margin-top: 4px; color: #74819a; font-size: 12px; letter-spacing: .015em; }
     main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-    .intro { flex: 0 0 auto; padding: clamp(22px, 4vh, 42px) 0 22px; border-bottom: 1px solid #e3e9f3; }
+    .intro { flex: 0 0 auto; max-height: 260px; padding: clamp(22px, 4vh, 42px) 0 22px; border-bottom: 1px solid #e3e9f3; overflow: hidden; opacity: 1; transition: max-height .45s ease, padding .45s ease, opacity .25s ease, border-color .25s ease; }
+    .intro.collapsed { max-height: 0; padding-top: 0; padding-bottom: 0; border-color: transparent; opacity: 0; }
     .eyebrow { margin: 0 0 9px; color: #3268c8; font-size: 11px; font-weight: 750; letter-spacing: .15em; text-transform: uppercase; }
     .intro h2 { max-width: none; margin: 0; color: #17243b; font-size: clamp(30px, 5vw, 52px); font-weight: 760; line-height: 1.06; letter-spacing: -.055em; white-space: nowrap; }
     .intro h2 span { color: #3268c8; }
@@ -111,6 +112,11 @@
     const predict = document.querySelector("#predict");
     const messages = document.querySelector("#messages");
     const history = [];
+    const intro = document.querySelector(".intro");
+
+    function collapseIntro() {
+      intro.classList.add("collapsed");
+    }
 
     function addMessage(text, kind, note) {
       const bubble = document.createElement("div");
@@ -130,6 +136,7 @@
     async function sendQuestion(question) {
       const text = question.trim();
       if (!text || send.disabled || predict.disabled) return;
+      collapseIntro();
       addMessage(text, "user");
       history.push({role: "user", content: text});
       input.value = "";
@@ -161,7 +168,13 @@
 
     async function predictDataset() {
       const file = dataset.files[0];
-      if (!file || send.disabled || predict.disabled) return;
+      if (!file) {
+        addMessage("Please select a manufacturing CSV file before requesting a pass/fail prediction.", "assistant error");
+        dataset.focus();
+        return;
+      }
+      if (send.disabled || predict.disabled) return;
+      collapseIntro();
       addMessage(`Uploaded dataset: ${file.name}`, "user");
       send.disabled = true;
       predict.disabled = true;
